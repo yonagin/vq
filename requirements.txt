@@ -1,0 +1,15 @@
+lightning==2.2.5
+jsonargparse[signatures]>=4.27.7
+tensorboard
+tensorboardx
+albumentations==1.4.4
+einops
+requests
+lpips
+pyiqa
+piq
+clean-fid
+librosa
+omegaconf
+datasets
+academictorrents

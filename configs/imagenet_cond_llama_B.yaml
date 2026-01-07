@@ -1,0 +1,103 @@
+# refer to https://app.koofr.net/links/90cbd5aa-ef70-4f5e-99bc-f12e5a89380e?path=%2F2021-04-03T19-39-50_cin_transformer%2Fconfigs%2F2021-04-03T19-39-50-project.yaml
+seed_everything: true
+trainer:
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  devices: 2
+  num_nodes: 1
+  precision: 16-mixed
+  max_epochs: 100
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0
+  gradient_clip_val: 1.0
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "/vq/llama_log/ffhq_256"
+        save_top_k: 5
+        monitor: "train/loss"
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: "/vq/llama_log/ffhq_256"
+      version: "test"
+      name:
+
+model:
+  class_path: taming.models.cond_transformer.Net2NetTransformer
+  init_args:
+    learning_rate: 3e-4
+    first_stage_key: image
+    cond_stage_key: class_label
+    weight_decay: 5e-2
+    wpe: 0.1 #learning rate decay
+    wp: 6
+    wp0: 0.005
+    twde: 0
+    transformer_config:
+      target: taming.modules.transformer.llama.GPT
+      params:
+        vocab_size: 16384 
+        block_size: 32
+        n_layer: 16
+        n_head: 16
+        n_embd: 1024
+        cond_dim: 1024
+        resid_dropout_p: 0.1
+        ffn_dropout_p: 0.1
+        token_drop: 0.1
+        drop_path_rate: 0.0 ##not using droppath rate
+        alng: 1e-3
+        class_num: 1000 #class tokens
+    first_stage_config:
+      target: taming.models.vq.VQModel
+      params:
+        ckpt_path: #specify your path for tokenizer 
+        use_ema: True
+        stage: transformer
+        ddconfig:
+          double_z: False
+          z_channels: 32
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult: [1,1,2,2,4]  # num_down = len(ch_mult)-1
+          num_res_blocks: 2
+          attn_resolutions: [16]
+          dropout: 0.0
+        quantconfig:
+          target: taming.modules.vqvae.quantize.VectorQuantizer
+          params:
+            n_e: 16384
+            e_dim: 32
+            beta: 0.33
+            legacy: false
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+    cond_stage_config:
+      target: taming.modules.util.Labelator
+      params:
+        n_classes: 1000
+
+data:
+  class_path: main.DataModuleFromConfig
+  init_args:
+    batch_size: 32
+    num_workers: 8
+    train:
+      target: taming.data.faceshq.FFHQTrain
+      params:
+        size: 256
+    validation:
+      target: taming.data.faceshq.FFHQValidation
+      params:
+          size: 256
+    test:
+      target: taming.data.faceshq.FFHQValidation
+      params:
+          size: 256
+ckpt_path: null # to resume
