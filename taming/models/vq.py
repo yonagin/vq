@@ -236,7 +236,9 @@ class VQModel(L.LightningModule):
         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
-        # Print reconstruction loss and perceptual loss every 100 steps
+
+        '''
+        #Print reconstruction loss and perceptual loss every 100 steps
         if self.global_step % 100 == 0 and self.trainer.is_global_zero:
             reconstruct_loss = log_dict_ae.get("train/reconstruct_loss", torch.tensor(0.0)).item()
             perceptual_loss = log_dict_ae.get("train/perceptual_loss", torch.tensor(0.0)).item()
@@ -246,7 +248,7 @@ class VQModel(L.LightningModule):
                 print(f"\nStep {self.global_step}: Reconstruction Loss = {reconstruct_loss:.6f}, Perceptual Loss = {perceptual_loss:.6f}, LSW Loss = {lsw_loss_value:.6f}")
             else:
                 print(f"\nStep {self.global_step}: Reconstruction Loss = {reconstruct_loss:.6f}, Perceptual Loss = {perceptual_loss:.6f}")
-
+        ''' 
     
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
