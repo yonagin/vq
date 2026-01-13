@@ -30,6 +30,7 @@ class VQModel(L.LightningModule):
                  learning_rate=None,
                  ### scheduler config
                  warmup_epochs=1.0, #warmup epochs
+                 warmup_steps=None, #warmup steps (takes precedence over warmup_epochs if specified)
                  scheduler_type = "linear-warmup_cosine-decay",
                  accumulate_steps = 1,
                  min_learning_rate = 0,
@@ -84,6 +85,7 @@ class VQModel(L.LightningModule):
         self.learning_rate = learning_rate
         self.scheduler_type = scheduler_type
         self.warmup_epochs = warmup_epochs
+        self.warmup_steps = warmup_steps
         self.min_learning_rate = min_learning_rate
         self.automatic_optimization = False
         self.accumulate_steps = accumulate_steps
@@ -310,7 +312,13 @@ class VQModel(L.LightningModule):
         if self.trainer.is_global_zero:
             print("step_per_epoch: {}".format(len(self.trainer.datamodule._train_dataloader()) // self.trainer.world_size))
         step_per_epoch  = len(self.trainer.datamodule._train_dataloader()) // self.trainer.world_size
-        warmup_steps = step_per_epoch * self.warmup_epochs
+        
+        # Use warmup_steps if specified, otherwise calculate from warmup_epochs
+        if self.warmup_steps is not None:
+            warmup_steps = self.warmup_steps
+        else:
+            warmup_steps = step_per_epoch * self.warmup_epochs
+        
         training_steps = step_per_epoch * self.trainer.max_epochs
 
         if self.scheduler_type == "None":
