@@ -41,7 +41,7 @@ model:
       dropout: 0.0
 
     quantconfig:
-      target: taming.modules.vqvae.quantize.VectorQuantizer
+      target: taming.modules.vqvae.quantize.ASVQ
       params:
         n_e: 262144 
         e_dim: 256
