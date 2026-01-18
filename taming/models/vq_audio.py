@@ -23,7 +23,6 @@ class VQModel(L.LightningModule):
                  ### Quantize Related
                  quantconfig,
                  sample_rate,
-                 target_bandwidths,
                  audio_normalize,
                  segment,
                  ckpt_path=None,
