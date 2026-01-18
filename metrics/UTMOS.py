@@ -1,72 +1,6 @@
 import os
 
-import sys
-import copy
-import dataclasses
-
-def import_fairseq_py311plus_compat():
-    """
-    Import fairseq on Python 3.11+ by patching dataclasses' mutable-default check.
-    When dataclasses complains:
-      ValueError: mutable default <class '...'> for field xxx is not allowed: use default_factory
-    we rewrite that field to use default_factory (returning a copy of the original default).
-    """
-    if "fairseq" in sys.modules:
-        return sys.modules["fairseq"]
-
-    if sys.version_info < (3, 11):
-        import fairseq
-        return fairseq
-
-    orig_get_field = dataclasses._get_field  # internal API
-
-    def patched_get_field(cls, a_name, a_type, default_kw_only):
-        try:
-            return orig_get_field(cls, a_name, a_type, default_kw_only)
-        except ValueError as e:
-            msg = str(e)
-            if ("mutable default" not in msg) or ("use default_factory" not in msg):
-                raise
-
-            # Grab the class attribute that dataclasses is trying to use as default.
-            default_attr = getattr(cls, a_name, dataclasses.MISSING)
-
-            # If it's already a Field, extract its default.
-            if isinstance(default_attr, dataclasses.Field):
-                default_value = default_attr.default
-            else:
-                default_value = default_attr
-
-            if default_value is dataclasses.MISSING:
-                # No recoverable default -> rethrow original error
-                raise
-
-            def _factory(d=default_value):
-                # Prefer deepcopy so each dataclass instance gets its own config object.
-                try:
-                    return copy.deepcopy(d)
-                except Exception:
-                    # Fallback: return the original object (not ideal, but avoids crashing)
-                    return d
-
-            f = dataclasses.field(default_factory=_factory)
-            # dataclasses._get_field normally fills these:
-            f.name = a_name
-            f.type = a_type
-            f._field_type = dataclasses._FIELD  # normal "field"
-
-            if f.kw_only is dataclasses.MISSING:
-                f.kw_only = default_kw_only
-
-            return f
-
-    dataclasses._get_field = patched_get_field
-    try:
-        import fairseq
-        return fairseq
-    finally:
-        dataclasses._get_field = orig_get_field
-
+import fairseq
 import pytorch_lightning as pl
 import requests
 import torch
@@ -147,7 +81,6 @@ def load_ssl_model(ckpt_path="wav2vec_small.pt"):
     if not os.path.exists(filepath):
         download_file(WAV2VEC_URL, filepath)
     SSL_OUT_DIM = 768
-    fairseq = import_fairseq_py311plus_compat()
     model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([filepath])
     ssl_model = model[0]
     ssl_model.remove_pretraining_modules()
