@@ -13,7 +13,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         dirpath: "/mnt/vq/sim_audio_log/libritts65k" # Please specify your own path
-        monitor: "val_ema/total_loss"
+        monitor: "val_ema/reconstruct_loss"
         save_top_k: 5
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
