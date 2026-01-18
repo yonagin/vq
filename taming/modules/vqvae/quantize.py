@@ -568,4 +568,49 @@ class ASVQ(nn.Module):
             z_q = z_q.permute(0, 3, 1, 2).contiguous()
 
         return z_q
-    
+
+class ASVQ1D(ASVQ):
+    def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
+        assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
+        assert rescale_logits==False, "Only for interface compatible with Gumbel"
+        assert return_logits==False, "Only for interface compatible with Gumbel"
+        # reshape z -> (batch, height, width, channel) and flatten
+        z = rearrange(z, 'b c h -> b h c').contiguous()
+        assert z.shape[-1] == self.e_dim
+        
+        z_flattened = z.view(-1, self.e_dim)
+        # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+        quant_codebook = self.scale * self.base 
+        d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
+            torch.sum(quant_codebook**2, dim=1) - 2 * \
+            torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
+
+        min_encoding_indices = torch.argmin(d, dim=1)
+        z_q = F.embedding(min_encoding_indices, quant_codebook).view(z.shape)
+        perplexity = None
+        min_encodings = None
+
+        # compute loss for embedding
+        if not self.legacy:
+            vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+                   torch.mean((z_q - z.detach()) ** 2)
+        else:
+            vq_loss = torch.mean((z_q.detach()-z)**2) + self.beta * \
+                   torch.mean((z_q - z.detach()) ** 2)
+
+        # preserve gradients
+        z_q = z + (z_q - z).detach()
+
+        # reshape back to match original input shape
+        z_q = rearrange(z_q, 'b h c -> b c h').contiguous()
+
+        if self.remap is not None:
+            min_encoding_indices = min_encoding_indices.reshape(z.shape[0],-1) # add batch axis
+            min_encoding_indices = self.remap_to_used(min_encoding_indices)
+            min_encoding_indices = min_encoding_indices.reshape(-1,1) # flatten
+
+        if self.sane_index_shape:
+            min_encoding_indices = min_encoding_indices.reshape(
+                z_q.shape[0], z_q.shape[2], z_q.shape[3])
+
+        return (z_q, min_encoding_indices), LossBreakdown(torch.tensor(0.0), torch.tensor(0.0), vq_loss, torch.tensor(0.0))    
