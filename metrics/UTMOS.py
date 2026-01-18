@@ -80,7 +80,7 @@ class UTMOSScore:
 
         # Lightning 版本差异这里通常没问题；如果你用的是更高版本且遇到 weights_only 限制，
         # 可以考虑在这里显式传 weights_only=False（视 Lightning 版本支持情况而定）。
-        self.model = BaselineLightningModule.load_from_checkpoint(filepath).eval().to(device)
+        self.model = BaselineLightningModule.load_from_checkpoint(filepath, weights_only=False).eval().to(device)
 
     def score(self, wavs: torch.Tensor) -> torch.Tensor:
         """
