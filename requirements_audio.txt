@@ -1,4 +1,4 @@
-git+https://github.com/facebookresearch/fairseq.git@v0.12.2
+fairseq
 torchcrepe
 pesq
 pystoi
