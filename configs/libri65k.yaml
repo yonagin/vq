@@ -13,7 +13,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         dirpath: "/mnt/vq/vq_audio_log/libri65k" # Please specify your own path
-        save_top_k: -1 # save all checkpoints
+        save_top_k: 5 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
