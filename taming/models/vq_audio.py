@@ -40,8 +40,25 @@ class VQModel(L.LightningModule):
         super().__init__()
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
+        self.loss = instantiate_from_config(lossconfig)
+        
+        self.audio_normalize = audio_normalize
+        
+        self.quantize = instantiate_from_config(quantconfig)
+        # determine quantized latent channels (robust to different quantizer implementations)
+        q_ch = None
+        if hasattr(self.quantize, 'e_dim'):
+            q_ch = self.quantize.e_dim
+        elif hasattr(self.quantize, 'embedding_dim'):
+            q_ch = self.quantize.embedding_dim
+        else:
+            try:
+                q_ch = ddconfig.get('dimension', 512) if isinstance(ddconfig, dict) else getattr(ddconfig, 'dimension', 512)
+            except Exception:
+                q_ch = 512
+
         self.backbone = Backbone(
-            input_channels=512, 
+            input_channels=q_ch,
             dim=768,
             intermediate_dim=2304,
             num_layers=12,
@@ -53,11 +70,6 @@ class VQModel(L.LightningModule):
             hop_length=320,
             padding="same"
         )
-        self.loss = instantiate_from_config(lossconfig)
-        
-        self.audio_normalize = audio_normalize
-        
-        self.quantize = instantiate_from_config(quantconfig)
         self.use_ema = use_ema
         self.stage = stage
         if ckpt_path is not None:
