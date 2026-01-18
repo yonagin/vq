@@ -13,7 +13,7 @@ import glob
 
 # ========== 配置部分 ==========
 # 修改这里的路径为你想要保存数据的位置
-DATA_ROOT = "/path/to/your/libritts_data"  # 改成你想要的路径
+DATA_ROOT = "/mnt/vq/dataset/libritts"  # 改成你想要的路径
 
 # LibriTTS 下载链接
 LIBRITTS_URLS = {
