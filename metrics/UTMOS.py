@@ -1,6 +1,5 @@
 import os
 
-import fairseq
 import pytorch_lightning as pl
 import requests
 import torch
@@ -77,6 +76,7 @@ def download_file(url, filename):
 
 
 def load_ssl_model(ckpt_path="wav2vec_small.pt"):
+    import fairseq
     filepath = os.path.join(os.environ['DATA_ROOT'], ckpt_path)
     if not os.path.exists(filepath):
         download_file(WAV2VEC_URL, filepath)
