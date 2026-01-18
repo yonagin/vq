@@ -62,9 +62,50 @@ def extract_tar(tar_path, extract_to):
             tar.extract(member, extract_to)
     print(f"解压完成\n")
 
+def verify_files(data_root, file_lists):
+    """验证所有文件是否存在"""
+    print("[步骤 4/5] 验证文件完整性")
+    print("-"*30)
+    
+    total_missing = 0
+    verified_files = {}
+    
+    for list_name, file_paths in file_lists.items():
+        missing_files = []
+        valid_files = []
+        
+        for data_path in file_paths:
+            full_path = os.path.join(data_root, data_path)
+            if not os.path.exists(full_path):
+                missing_files.append(data_path)
+            else:
+                valid_files.append(data_path)
+        
+        total_missing += len(missing_files)
+        
+        if missing_files:
+            print(f"\n{list_name} 数据集:")
+            print(f"  警告: 发现 {len(missing_files)} 个缺失文件")
+            for path in missing_files[:5]:  # 显示前5个
+                print(f"    - {path}")
+            if len(missing_files) > 5:
+                print(f"    ... 以及其他 {len(missing_files) - 5} 个缺失文件")
+        else:
+            print(f"✓ {list_name} 数据集: 所有 {len(valid_files)} 个文件验证通过")
+        
+        verified_files[list_name] = valid_files
+    
+    if total_missing > 0:
+        print(f"\n总计: {total_missing} 个文件缺失")
+    else:
+        print("\n✓ 所有文件验证通过！")
+    
+    print()
+    return verified_files
+
 def save_file_lists(data_root, file_lists):
     """保存文件列表到文本文件"""
-    print("[步骤 4/4] 生成文件列表")
+    print("[步骤 5/5] 生成文件列表")
     print("-"*30)
     
     for list_name, file_paths in file_lists.items():
@@ -176,7 +217,7 @@ def main():
     download_dir.mkdir(exist_ok=True)
     
     # 1. 下载数据集
-    print("\n[步骤 1/4] 下载数据集")
+    print("\n[步骤 1/5] 下载数据集")
     print("-"*30)
     for subset in DOWNLOAD_SUBSETS:
         if subset not in LIBRITTS_URLS:
@@ -198,7 +239,7 @@ def main():
                 continue
     
     # 2. 解压数据集
-    print("\n[步骤 2/4] 解压数据集")
+    print("\n[步骤 2/5] 解压数据集")
     print("-"*30)
     for tar_file in download_dir.glob("*.tar.gz"):
         try:
@@ -207,7 +248,7 @@ def main():
             print(f"解压失败 {tar_file}: {e}")
     
     # 3. 整理文件结构
-    print("\n[步骤 3/4] 整理文件结构")
+    print("\n[步骤 3/5] 整理文件结构")
     print("-"*30)
     try:
         file_lists = organize_files(DATA_ROOT)
@@ -215,7 +256,14 @@ def main():
         print(f"整理文件失败: {e}")
         return
     
-    # 4. 生成文件列表
+    # 4. 验证文件
+    if file_lists:
+        try:
+            file_lists = verify_files(DATA_ROOT, file_lists)
+        except Exception as e:
+            print(f"验证文件失败: {e}")
+    
+    # 5. 生成文件列表
     if file_lists:
         try:
             save_file_lists(DATA_ROOT, file_lists)

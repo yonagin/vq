@@ -78,27 +78,6 @@ class LibriTTSTrain(LibriTTSBase):
         txt_filelist = os.path.join(self.data_root, self.NAME + ".txt")
         with open(txt_filelist, "r") as f:
             self.data = f.read().splitlines()
-        
-        # Verify all files exist at startup
-        print(f"Verifying {len(self.data)} files in {self.NAME} dataset...")
-        missing_files = []
-        for idx, data_path in enumerate(self.data):
-            full_path = os.path.join(self.data_root, data_path)
-            if not os.path.exists(full_path):
-                missing_files.append((idx, data_path))
-        
-        if missing_files:
-            print(f"\nWARNING: Found {len(missing_files)} missing files in {self.NAME} dataset:")
-            for idx, path in missing_files[:10]:  # Show first 10
-                print(f"  [{idx}] {path}")
-            if len(missing_files) > 10:
-                print(f"  ... and {len(missing_files) - 10} more")
-            print(f"\nRemoving {len(missing_files)} missing files from dataset\n")
-            # Remove missing files
-            self.data = [p for idx, p in enumerate(self.data) if idx not in [m[0] for m in missing_files]]
-            print(f"Dataset size after cleanup: {len(self.data)}")
-        else:
-            print(f"All {len(self.data)} files verified successfully!")
 
 
 
@@ -109,26 +88,6 @@ class LibriTTSDev(LibriTTSBase):
         txt_filelist = os.path.join(self.data_root, self.NAME + ".txt")
         with open(txt_filelist, "r") as f:
             self.data = f.read().splitlines()
-        
-        # Verify all files exist at startup
-        print(f"Verifying {len(self.data)} files in {self.NAME} dataset...")
-        missing_files = []
-        for idx, data_path in enumerate(self.data):
-            full_path = os.path.join(self.data_root, data_path)
-            if not os.path.exists(full_path):
-                missing_files.append((idx, data_path))
-        
-        if missing_files:
-            print(f"\nWARNING: Found {len(missing_files)} missing files in {self.NAME} dataset:")
-            for idx, path in missing_files[:10]:
-                print(f"  [{idx}] {path}")
-            if len(missing_files) > 10:
-                print(f"  ... and {len(missing_files) - 10} more")
-            print(f"\nRemoving {len(missing_files)} missing files from dataset\n")
-            self.data = [p for idx, p in enumerate(self.data) if idx not in [m[0] for m in missing_files]]
-            print(f"Dataset size after cleanup: {len(self.data)}")
-        else:
-            print(f"All {len(self.data)} files verified successfully!")
 
             
 
@@ -139,23 +98,3 @@ class LibriTTSTest(LibriTTSBase):
         txt_filelist = os.path.join(self.data_root, self.NAME + ".txt")
         with open(txt_filelist, "r") as f:
             self.data = f.read().splitlines()
-        
-        # Verify all files exist at startup
-        print(f"Verifying {len(self.data)} files in {self.NAME} dataset...")
-        missing_files = []
-        for idx, data_path in enumerate(self.data):
-            full_path = os.path.join(self.data_root, data_path)
-            if not os.path.exists(full_path):
-                missing_files.append((idx, data_path))
-        
-        if missing_files:
-            print(f"\nWARNING: Found {len(missing_files)} missing files in {self.NAME} dataset:")
-            for idx, path in missing_files[:10]:
-                print(f"  [{idx}] {path}")
-            if len(missing_files) > 10:
-                print(f"  ... and {len(missing_files) - 10} more")
-            print(f"\nRemoving {len(missing_files)} missing files from dataset\n")
-            self.data = [p for idx, p in enumerate(self.data) if idx not in [m[0] for m in missing_files]]
-            print(f"Dataset size after cleanup: {len(self.data)}")
-        else:
-            print(f"All {len(self.data)} files verified successfully!")
