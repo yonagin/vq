@@ -63,7 +63,7 @@ model:
 data:
   class_path: main.PadDataModuleFromConfig
   init_args:
-    batch_size: 20
+    batch_size: 64
     num_workers: 4
     train:
       target: taming.data.libritts.LibriTTSTrain
