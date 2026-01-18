@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "vq_audio_log/simvq_1k" # Please specify your own path
+        dirpath: "/mnt/vq/sim_audio_log/libritts_24khz" # Please specify your own path
         save_top_k: -1 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -20,7 +20,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "vq_audio_log/simvq_1k" #Please specify your own path
+      save_dir: "/mnt/vq/sim_audio_log/libritts_24khz" #Please specify your own path
       version: "1second"
       name:
 
@@ -34,7 +34,7 @@ model:
     quantconfig:
       target: taming.modules.vqvae.quantize.SimVQ1D
       params:
-        n_e: 1024
+        n_e: 65536
         e_dim: 512
         beta: 0.25
         legacy: false
