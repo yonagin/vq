@@ -5,6 +5,7 @@ import lightning as L
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
+from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
