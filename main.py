@@ -1,11 +1,11 @@
 import argparse, os, sys, datetime, glob, importlib
 from torch.utils.data import random_split, DataLoader, Dataset
 
-import lightning as L
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.core import LightningDataModule
 from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -47,7 +47,7 @@ class WrappedDataset(Dataset):
         return self.data[idx]
 
 
-class DataModuleFromConfig(L.LightningDataModule):
+class DataModuleFromConfig(LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None,
                  wrap=False, num_workers=None):
         super().__init__()
