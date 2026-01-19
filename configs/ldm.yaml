@@ -58,7 +58,6 @@ model:
       params:
         use_ema: true
         model_type: "full"
-        stage: null
         ddconfig:
           double_z: False
           z_channels: 32
