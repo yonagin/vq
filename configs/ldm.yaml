@@ -56,7 +56,6 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
-        embed_dim: 32
         use_ema: true
         model_type: "full"
         stage: null

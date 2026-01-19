@@ -359,10 +359,8 @@ class VQModel(L.LightningModule):
 
 
 class VQModelInterface(VQModel):
-    def __init__(self, embed_dim, *args, **kwargs):
-        super().__init__(embed_dim=embed_dim, *args, **kwargs)
-        self.embed_dim = embed_dim
-
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
     def encode(self, x):
         h = self.encoder(x)
         #h = self.quant_conv(h)
