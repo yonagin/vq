@@ -116,35 +116,32 @@ class VQModel(L.LightningModule):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         ema_mapping = {}
         new_params = OrderedDict()
-        if stage == "transformer": ### directly use ema encoder and decoder parameter
-            if self.use_ema:
-                ema_keys = set(k for k in sd.keys() if "model_ema" in k)
-                
-                for k, v in sd.items(): 
-                    if "encoder" in k or "decoder" in k or "quant" in k:
-                        if "model_ema" in k:
-                            k_no_ema = k.replace("model_ema.", "")
-                            new_k = ema_mapping[k_no_ema]
-                            new_params[new_k] = v   
-                        else:
-                            s_name = k.replace('.', '')
-                            ema_mapping[s_name] = k
-                            ema_key = "model_ema." + s_name
-                            if ema_key not in ema_keys:
-                                new_params[k] = v  # directly load buffers and other parameters without EMA
-                
-                missing_keys, unexpected_keys = self.load_state_dict(new_params, strict=False)
-            else: #also only load the Generator
-                for k, v in sd.items():
-                    if "encoder" in k:
-                        new_params[k] = v
-                    elif "decoder" in k:
-                        new_params[k] = v
-                    elif "quant" in k:
-                        new_params[k] = v
+        if self.use_ema:
+            ema_keys = set(k for k in sd.keys() if "model_ema" in k)
+            
+            for k, v in sd.items(): 
+                if "encoder" in k or "decoder" in k or "quant" in k:
+                    if "model_ema" in k:
+                        k_no_ema = k.replace("model_ema.", "")
+                        new_k = ema_mapping[k_no_ema]
+                        new_params[new_k] = v   
+                    else:
+                        s_name = k.replace('.', '')
+                        ema_mapping[s_name] = k
+                        ema_key = "model_ema." + s_name
+                        if ema_key not in ema_keys:
+                            new_params[k] = v  # directly load buffers and other parameters without EMA
+            
             missing_keys, unexpected_keys = self.load_state_dict(new_params, strict=False)
-        else: ## simple resume
-            missing_keys, unexpected_keys = self.load_state_dict(sd, strict=False)
+        else: #also only load the Generator
+            for k, v in sd.items():
+                if "encoder" in k:
+                    new_params[k] = v
+                elif "decoder" in k:
+                    new_params[k] = v
+                elif "quant" in k:
+                    new_params[k] = v
+        missing_keys, unexpected_keys = self.load_state_dict(new_params, strict=False)
         print(f"Restored from {path}:missing_keys={missing_keys}, unexpected_keys={unexpected_keys}")
 
     def encode(self, x):
