@@ -318,9 +318,10 @@ class AttentionBlock(nn.Module):
     def _forward(self, x):
         b, c, *spatial = x.shape
         x = x.reshape(b, c, -1)
-        qkv = self.qkv(self.norm(x))
-        h = self.attention(qkv)
-        h = self.proj_out(h)
+        with torch.cuda.amp.autocast(enabled=True):
+            qkv = self.qkv(self.norm(x))
+            h = self.attention(qkv)
+            h = self.proj_out(h)
         return (x + h).reshape(b, c, *spatial)
 
 
