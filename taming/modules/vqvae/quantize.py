@@ -468,7 +468,7 @@ class ASVQ(nn.Module):
 
         self.register_buffer('base', torch.randn(n_e, e_dim))
         self.sigma = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
-        self.scale = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
+        #self.scale = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
         self.remap = remap
         if self.remap is not None:
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
@@ -581,7 +581,7 @@ class ASVQ1D(ASVQ):
         
         z_flattened = z.view(-1, self.e_dim)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        quant_codebook = self.scale * self.base 
+        quant_codebook = self.sigma * self.base 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
