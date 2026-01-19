@@ -114,10 +114,14 @@ def main(args):
         prewav_16k=torchaudio.functional.resample(prewav, orig_freq=prewav_sr, new_freq=16000)
 
         # 1.UTMOS
-        print("****UTMOS_raw",i,UTMOS.score(rawwav_16k.unsqueeze(1))[0].item())
-        print("****UTMOS_encodec",i,UTMOS.score(prewav_16k.unsqueeze(1))[0].item())
-        utmos_sumgt+=UTMOS.score(rawwav_16k.unsqueeze(1))[0].item()
-        utmos_sumencodec+=UTMOS.score(prewav_16k.unsqueeze(1))[0].item()
+        raw_score = UTMOS.score(rawwav_16k)[0].item()
+        pre_score = UTMOS.score(prewav_16k)[0].item()
+
+        print(f"****UTMOS_raw {i}: {raw_score}")
+        print(f"****UTMOS_encodec {i}: {pre_score}")
+
+        utmos_sumgt += raw_score
+        utmos_sumencodec += pre_score
     
         # breakpoint()
 
@@ -168,7 +172,7 @@ def main(args):
         
     with open(Path(args.ckpt_path).parent / "result.txt", 'w') as f:
         print_and_save(f"UTMOS_raw: {utmos_sumgt}, {utmos_sumgt/len(paths)}", f)
-        print_and_save(f"UTMOS_encodec: {utmos_sumgt}, {utmos_sumencodec/len(paths)}", f)
+        print_and_save(f"UTMOS_encodec: {utmos_sumencodec}, {utmos_sumencodec/len(paths)}", f)
         print_and_save(f"PESQ: {pesq_sumpre}, {pesq_sumpre/len(paths)}", f)
         print_and_save(f"F1_score: {f1score_sumpre}, {f1score_sumpre/(len(paths)-f1score_filt)}, {f1score_filt}", f)
         print_and_save(f"STOI: {np.mean(stoi_sumpre)}", f)
