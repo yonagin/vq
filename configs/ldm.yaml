@@ -79,7 +79,7 @@ model:
         lossconfig:
           target: torch.nn.Identity
         ckpt_path: "/mnt/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt"
-    cond_stage_config: null
+    cond_stage_config: '__is_unconditional__'
 
 data:
   class_path: main.DataModuleFromConfig

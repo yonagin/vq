@@ -424,7 +424,7 @@ class LatentDiffusion(DDPM):
     """main class"""
     def __init__(self,
                  first_stage_config,
-                 cond_stage_config,
+                 cond_stage_config=None,
                  num_timesteps_cond=None,
                  cond_stage_key="image",
                  cond_stage_trainable=False,
