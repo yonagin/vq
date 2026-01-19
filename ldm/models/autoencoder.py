@@ -369,7 +369,7 @@ class VQModelInterface(VQModel):
     def decode(self, h, force_not_quantize=False):
         # also go through quantization layer
         if not force_not_quantize:
-            quant, _, info = self.quantize(h)
+            (quant, _), _ = self.quantize(h)
         else:
             quant = h
         #quant = self.post_quant_conv(quant)

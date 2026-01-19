@@ -20,7 +20,7 @@ trainer:
         logging_interval: step
     - class_path: main.ImageLogger
       init_args:
-        batch_frequency: 5000
+        batch_frequency: 4700
         max_images: 8
         increase_log_steps: false
   logger:
