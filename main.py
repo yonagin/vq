@@ -3,16 +3,15 @@ from torch.utils.data import random_split, DataLoader, Dataset
 
 import lightning as L
 from lightning.pytorch.cli import LightningCLI
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
-from pytorch_lightning.utilities.distributed import rank_zero_only
 import numpy as np
 import torchvision
 from PIL import Image
-import pytorch_lightning as pl  
 
 from torch.utils.data.dataloader import default_collate as custom_collate
 
@@ -99,7 +98,7 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            pl.loggers.TestTubeLogger: self._testtube,
+            L.loggers.TestTubeLogger: self._testtube,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
