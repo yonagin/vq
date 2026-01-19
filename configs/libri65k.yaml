@@ -21,7 +21,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/mnt/vq/vq_audio_log/libri65k_d32" #Please specify your own path
+      save_dir: "/mnt/vq/vq_audio_log/libri65k_d32_SEA" #Please specify your own path
       version: "1second"
       name:
 
@@ -59,6 +59,7 @@ model:
     segment: None
     learning_rate: 1e-4
     scheduler_type: "None"
+    use_vocos_backbone: false
     use_ema: true
 
 data:

@@ -36,10 +36,15 @@ class VQModel(L.LightningModule):
                  min_learning_rate = 0,
                  use_ema = False,
                  stage = None,
+                 use_vocos_backbone = True,
                  ):
         super().__init__()
         self.encoder = Encoder(**ddconfig)
-        self.decoder = Decoder(**ddconfig)
+        self.use_vocos_backbone = use_vocos_backbone
+        if use_vocos_backbone:
+            self.decoder = None
+        else:
+            self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         
         self.audio_normalize = audio_normalize
@@ -63,7 +68,7 @@ class VQModel(L.LightningModule):
             intermediate_dim=2304,
             num_layers=12,
             adanorm_num_embeddings=None # only one quantizer layer so no adanorm required
-        )
+        ) if use_vocos_backbone else None
         self.head = FourierHead(
             dim=768,
             n_fft=1280,
@@ -161,10 +166,11 @@ class VQModel(L.LightningModule):
 
     def decode(self, quant_tuple):
         quant, scale = quant_tuple
-        #dec = self.decoder(quant)
-        
-        dec = self.backbone(quant)
-        dec = self.head(dec).unsqueeze(1)
+        if self.use_vocos_backbone:
+            dec = self.backbone(quant)
+            dec = self.head(dec).unsqueeze(1)
+        else:
+            dec = self.decoder(quant)
         
         if scale is not None:
             dec = dec * scale.view(-1, 1, 1)
@@ -264,12 +270,12 @@ class VQModel(L.LightningModule):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_gen = torch.optim.Adam(list(self.encoder.parameters())+
-                                  list(self.decoder.parameters())+
-                                  list(self.quantize.parameters())+
-                                  list(self.backbone.parameters())+
-                                  list(self.head.parameters()),
-                                  lr=lr, betas=(0.5, 0.9))
+        gen_params = list(self.encoder.parameters()) + list(self.quantize.parameters()) + list(self.head.parameters())
+        if self.use_vocos_backbone:
+            gen_params += list(self.backbone.parameters())
+        else:
+            gen_params += list(self.decoder.parameters())
+        opt_gen = torch.optim.Adam(gen_params, lr=lr, betas=(0.5, 0.9))
         opt_disc = torch.optim.Adam(list(self.loss.multiperioddisc.parameters())+
                                      list(self.loss.multiresddisc.parameters())+
                                      list(self.loss.dac.parameters()),
