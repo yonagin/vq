@@ -1,4 +1,4 @@
-fairseq
+utmosv2
 torchcrepe
 pesq
 pystoi
