@@ -85,7 +85,7 @@ model:
 data:
   class_path: main.DataModuleFromConfig
   init_args:
-    batch_size: 32
+    batch_size: 64
     num_workers: 8
     train:
       target: taming.data.faceshq.FFHQTrain
