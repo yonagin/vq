@@ -54,7 +54,7 @@ model:
         channel_mult: [1, 4]
         num_head_channels: 32
     first_stage_config:
-      target: ldm.models.models_vq.VQModelInterface
+      target: ldm.models.autoencoder.VQModelInterface
       params:
         use_ema: true
         model_type: "full"
