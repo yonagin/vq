@@ -1,5 +1,5 @@
 import torch
-import pytorch_lightning as pl
+import lightning as L
 import torch.nn.functional as F
 from contextlib import contextmanager
 

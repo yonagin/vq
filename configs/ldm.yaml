@@ -105,3 +105,4 @@ data:
           size: 256
           root: "/mnt/vq/data/ffhq" # Please specify your own path
           list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
+ckpt_path: null # to resume
