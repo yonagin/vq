@@ -5,6 +5,7 @@ import lightning as L
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
+from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -98,7 +99,7 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            L.loggers.TensorBoardLogger: self._testtube,
+            TensorBoardLogger: self._testtube,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
