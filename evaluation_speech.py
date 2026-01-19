@@ -23,6 +23,7 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 @contextmanager
 def suppress_tqdm():
+    """抑制第三方库内部的 tqdm 进度条"""
     import tqdm.std as tqdm_std
     original_init = tqdm_std.tqdm.__init__
     
@@ -81,24 +82,31 @@ def main(args):
     
     usage = {i: 0 for i in range(codebook_size)}
     
+    # 预先初始化 UTMOS
     UTMOS = UTMOSScore(device=DEVICE)
     
+    # 初始化指标累加器
     utmos_sumgt = 0
     utmos_sumencodec = 0
     pesq_sumpre = 0
     f1score_sumpre = 0
     stoi_sumpre = []
     f1score_filt = 0
-    sample_count = 0
     
-    test_dataloader = dataset._test_dataloader()
-    pbar = tqdm(test_dataloader, desc="Evaluating", unit="batch", ncols=120)
+    # 获取数据加载器
+    test_dataloader = list(dataset._test_dataloader())
+    
+    # 使用单一进度条
+    pbar = tqdm(test_dataloader, desc="Evaluating", unit="sample", ncols=120)
     
     with torch.no_grad():
-        for batch in pbar:  
-            batch_size = batch["waveform"].shape[0]
+        for i, batch in enumerate(pbar):
+            assert batch["waveform"].shape[0] == 1
+            audio_path_str = batch["audio_path"][0]
+            
             audio = batch["waveform"].to(DEVICE)
         
+            # ========== 编码解码 ==========
             if model.use_ema:
                 with model.ema_scope():
                     quant, diff, indices, _ = model.encode(audio)
@@ -106,93 +114,72 @@ def main(args):
             else:
                 quant, diff, indices, _ = model.encode(audio)
                 reconstructed_audios = model.decode(quant)
-            
+               
             for index in indices.flatten():
                 usage[index.item()] += 1
+                
+            # 保存重建音频
+            save_path = args.ckpt_path.parent / "recons" / audio_path_str
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            torchaudio.save(
+                save_path.as_posix(), 
+                reconstructed_audios[0].cpu().clip(min=-0.99, max=0.99), 
+                sample_rate=24000, encoding='PCM_S', bits_per_sample=16
+            )
             
-            for b in range(batch_size):
-                audio_path_str = batch["audio_path"][b]
-
-                save_path = args.ckpt_path.parent / "recons" / audio_path_str
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torchaudio.save(
-                    save_path.as_posix(), 
-                    reconstructed_audios[b].cpu().clip(min=-0.99, max=0.99), 
-                    sample_rate=24000, 
-                    encoding='PCM_S', 
-                    bits_per_sample=16
-                )
-
-                rawwav, rawwav_sr = torchaudio.load(
-                    os.path.join(os.environ['DATA_ROOT'], audio_path_str)
-                )
-                prewav, prewav_sr = torchaudio.load(save_path.as_posix())
-                
-                rawwav = rawwav.to(DEVICE)
-                prewav = prewav.to(DEVICE)
-           
-                rawwav_16k = torchaudio.functional.resample(
-                    rawwav, orig_freq=rawwav_sr, new_freq=16000
-                )
-                prewav_16k = torchaudio.functional.resample(
-                    prewav, orig_freq=prewav_sr, new_freq=16000
-                )
-
-                # 1. UTMOS
-                with suppress_tqdm():
-                    raw_score = UTMOS.score(rawwav_16k)[0].item()
-                    pre_score = UTMOS.score(prewav_16k)[0].item()
-
-                utmos_sumgt += raw_score
-                utmos_sumencodec += pre_score
-
-                # 2. PESQ  
-                min_len = min(rawwav_16k.size(1), prewav_16k.size(1))
-                rawwav_16k_pesq = rawwav_16k[:, :min_len].squeeze(0)
-                prewav_16k_pesq = prewav_16k[:, :min_len].squeeze(0)
-                pesq_score = pesq(
-                    16000, 
-                    rawwav_16k_pesq.cpu().numpy(), 
-                    prewav_16k_pesq.cpu().numpy(), 
-                    "wb", 
-                    on_error=1
-                )
-                pesq_sumpre += pesq_score
-
-                # 3. F1-score
-                rawwav_16k_f1 = rawwav_16k[:, :min_len]
-                prewav_16k_f1 = prewav_16k[:, :min_len]
-                periodicity_loss, pitch_loss, f1_score = calculate_periodicity_metrics(
-                    rawwav_16k_f1, prewav_16k_f1
-                )
-                
-                if math.isnan(f1_score):
-                    f1score_filt += 1
-                else:
-                    f1score_sumpre += f1_score
-
-                # 4. STOI
-                min_len_stoi = min(rawwav.size(1), prewav.size(1))
-                rawwav_stoi = rawwav[:, :min_len_stoi].squeeze(0)
-                prewav_stoi = prewav[:, :min_len_stoi].squeeze(0)
-                tmp_stoi = stoi(
-                    rawwav_stoi.cpu().numpy(), 
-                    prewav_stoi.cpu().numpy(), 
-                    rawwav_sr, 
-                    extended=False
-                )
-                stoi_sumpre.append(tmp_stoi)
-                
-                sample_count += 1
+            # ========== 计算指标 ==========
+            rawwav, rawwav_sr = torchaudio.load(os.path.join(os.environ['DATA_ROOT'], audio_path_str))
+            prewav, prewav_sr = torchaudio.load(save_path.as_posix())
             
+            rawwav = rawwav.to(DEVICE)
+            prewav = prewav.to(DEVICE)
+       
+            rawwav_16k = torchaudio.functional.resample(rawwav, orig_freq=rawwav_sr, new_freq=16000)
+            prewav_16k = torchaudio.functional.resample(prewav, orig_freq=prewav_sr, new_freq=16000)
+
+            # 1. UTMOS (抑制内部进度条)
+            with suppress_tqdm():
+                raw_score = UTMOS.score(rawwav_16k)[0].item()
+                pre_score = UTMOS.score(prewav_16k)[0].item()
+
+            utmos_sumgt += raw_score
+            utmos_sumencodec += pre_score
+
+            # 2. PESQ  
+            min_len = min(rawwav_16k.size()[1], prewav_16k.size()[1])
+            rawwav_16k_pesq = rawwav_16k[:, :min_len].squeeze(0)
+            prewav_16k_pesq = prewav_16k[:, :min_len].squeeze(0)
+            pesq_score = pesq(16000, rawwav_16k_pesq.cpu().numpy(), prewav_16k_pesq.cpu().numpy(), "wb", on_error=1)
+            pesq_sumpre += pesq_score
+
+            # 3. F1-score
+            rawwav_16k_f1 = rawwav_16k[:, :min_len]
+            prewav_16k_f1 = prewav_16k[:, :min_len]
+            periodicity_loss, pitch_loss, f1_score = calculate_periodicity_metrics(rawwav_16k_f1, prewav_16k_f1)
+            
+            if math.isnan(f1_score):
+                f1score_filt += 1
+            else:
+                f1score_sumpre += f1_score
+
+            # 4. STOI
+            min_len_stoi = min(rawwav.size()[1], prewav.size()[1])
+            rawwav_stoi = rawwav[:, :min_len_stoi].squeeze(0)
+            prewav_stoi = prewav[:, :min_len_stoi].squeeze(0)
+            tmp_stoi = stoi(rawwav_stoi.cpu(), prewav_stoi.cpu(), rawwav_sr, extended=False)
+            stoi_sumpre.append(tmp_stoi)
+            
+            # 更新进度条显示当前平均指标
+            n = i + 1
             pbar.set_postfix({
-                'UTMOS': f'{utmos_sumencodec/sample_count:.2f}',
-                'PESQ': f'{pesq_sumpre/sample_count:.2f}',
-                'F1': f'{f1score_sumpre/max(1, sample_count-f1score_filt):.2f}',
+                'UTMOS': f'{utmos_sumencodec/n:.2f}',
+                'PESQ': f'{pesq_sumpre/n:.2f}',
+                'F1': f'{f1score_sumpre/max(1, n-f1score_filt):.2f}',
                 'STOI': f'{np.mean(stoi_sumpre):.3f}'
             })
     
-    num_samples = sample_count 
+    # ========== 最终结果 ==========
+    num_samples = len(stoi_sumpre)
     num_count = sum(1 for v in usage.values() if v > 0)
     utilization = num_count / codebook_size
     
@@ -208,11 +195,7 @@ def main(args):
         print_and_save(f"UTMOS_raw:     {utmos_sumgt/num_samples:.4f}", f)
         print_and_save(f"UTMOS_encodec: {utmos_sumencodec/num_samples:.4f}", f)
         print_and_save(f"PESQ:          {pesq_sumpre/num_samples:.4f}", f)
-        valid_f1_samples = num_samples - f1score_filt
-        if valid_f1_samples > 0:
-            print_and_save(f"F1_score:      {f1score_sumpre/valid_f1_samples:.4f} (filtered: {f1score_filt})", f)
-        else:
-            print_and_save(f"F1_score:      N/A (all filtered: {f1score_filt})", f)
+        print_and_save(f"F1_score:      {f1score_sumpre/(num_samples-f1score_filt):.4f} (filtered: {f1score_filt})", f)
         print_and_save(f"STOI:          {np.mean(stoi_sumpre):.4f}", f)
         print_and_save(f"Utilization:   {utilization:.4f} ({num_count}/{codebook_size})", f)
     
