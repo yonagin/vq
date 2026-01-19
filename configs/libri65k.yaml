@@ -59,7 +59,7 @@ model:
     segment: None
     learning_rate: 1e-4
     scheduler_type: "None"
-    use_vocos_backbone: True
+    use_vocos_backbone: False
     use_ema: true
 
 data:

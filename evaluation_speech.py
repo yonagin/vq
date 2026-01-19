@@ -1,7 +1,18 @@
 import os
 import sys
 sys.path.append(os.getcwd())
+import warnings
 import glob
+
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*deprecated.*')
+warnings.filterwarnings('ignore', message='.*will be removed.*')
+warnings.filterwarnings('ignore', message='.*divide by zero.*')
+warnings.filterwarnings('ignore', module='torchaudio')
+warnings.filterwarnings('ignore', module='utmosv2')
+warnings.filterwarnings('ignore', module='transformers')
+
 from metrics.UTMOS import UTMOSScore
 from metrics.periodicity import calculate_periodicity_metrics
 import torchaudio
