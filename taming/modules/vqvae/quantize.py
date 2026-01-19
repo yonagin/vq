@@ -467,6 +467,7 @@ class ASVQ(nn.Module):
         self.legacy = legacy
 
         self.register_buffer('base', torch.randn(n_e, e_dim))
+        self.sigma = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
         self.scale = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
         self.remap = remap
         if self.remap is not None:
@@ -516,7 +517,7 @@ class ASVQ(nn.Module):
         assert z.shape[-1] == self.e_dim
         z_flattened = z.view(-1, self.e_dim)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        quant_codebook = self.scale * self.base 
+        quant_codebook = self.sigma * self.base 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
@@ -559,7 +560,7 @@ class ASVQ(nn.Module):
             indices = indices.reshape(-1) # flatten again
 
         # get quantized latent vectors
-        quant_codebook = self.scale * self.base
+        quant_codebook = self.sigma * self.base
         z_q = F.embedding(indices, quant_codebook)
 
         if shape is not None:
