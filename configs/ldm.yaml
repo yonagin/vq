@@ -6,14 +6,15 @@ trainer:
   num_nodes: 1
   precision: 16-mixed
   max_epochs: 250
-  check_val_every_n_epoch: 5
+  check_val_every_n_epoch: 1
   num_sanity_val_steps: 0
   log_every_n_steps: 100
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         dirpath: "/mnt/vq/ldm_log/ffhq_256" # Please specify your own path
-        save_top_k: -1 # save all checkpoints
+        save_top_k: 5 
+        monitor: val/loss_simple_ema
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
