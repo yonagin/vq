@@ -1,11 +1,10 @@
 import argparse, os, sys, datetime, glob, importlib
 from torch.utils.data import random_split, DataLoader, Dataset
 
+import lightning as L
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from lightning.pytorch.loggers import TensorBoardLogger
-from lightning.pytorch.core import LightningDataModule
 from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -47,7 +46,7 @@ class WrappedDataset(Dataset):
         return self.data[idx]
 
 
-class DataModuleFromConfig(LightningDataModule):
+class DataModuleFromConfig(L.LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None,
                  wrap=False, num_workers=None):
         super().__init__()
@@ -99,7 +98,7 @@ class ImageLogger(Callback):
         self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
-            TensorBoardLogger: self._testtube,
+            L.loggers.TensorBoardLogger: self._testtube,
         }
         self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
         if not increase_log_steps:
