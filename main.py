@@ -8,7 +8,7 @@ from lightning import seed_everything
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
-from lightning.pytorch.utilities import rank_zero_only
+from pytorch_lightning.utilities.distributed import rank_zero_only
 import numpy as np
 import torchvision
 from PIL import Image
