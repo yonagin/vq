@@ -13,7 +13,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/vq/llama_log/ffhq_256"
+        dirpath: "/vq/llama_log/imagenet_256"
         save_top_k: 5
         monitor: "train/loss"
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -22,7 +22,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/vq/llama_log/ffhq_256"
+      save_dir: "/vq/llama_log/imagenet_256"
       version: "test"
       name:
 
@@ -88,16 +88,20 @@ data:
   init_args:
     batch_size: 32
     num_workers: 8
+
     train:
-      target: taming.data.faceshq.FFHQTrain
+      target: taming.data.imagenet.ImageNetTrain
       params:
         size: 256
+        subset:
     validation:
-      target: taming.data.faceshq.FFHQValidation
+      target: taming.data.imagenet.ImageNetValidation
       params:
-          size: 256
+        size: 256
+        subset:
     test:
-      target: taming.data.faceshq.FFHQValidation
+      target: taming.data.imagenet.ImageNetValidation
       params:
-          size: 256
+        size: 256
+        subset:
 ckpt_path: null # to resume

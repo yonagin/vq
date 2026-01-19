@@ -1,0 +1,107 @@
+seed_everything: true
+trainer:
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  devices: 1
+  num_nodes: 1
+  precision: 16-mixed
+  max_epochs: 250
+  check_val_every_n_epoch: 5
+  num_sanity_val_steps: 0
+  log_every_n_steps: 100
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "/mnt/vq/ldm_log/ffhq_256" # Please specify your own path
+        save_top_k: -1 # save all checkpoints
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: main.ImageLogger
+      init_args:
+        batch_frequency: 5000
+        max_images: 8
+        increase_log_steps: false
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+        save_dir: "/mnt/vq/ldm_log/ffhq_256" #Please specify your own path
+        version: 'test'
+        name:
+
+model:
+  class_path: ldm.models.diffusion.ddpm.LatentDiffusion
+  init_args:
+    learning_rate: 1e-4
+    timesteps: 1000
+    linear_start: 0.0015
+    linear_end: 0.0195
+    num_timesteps_cond: 1
+    log_every_t: 200
+    first_stage_key: image
+    image_size: 16
+    channels: 32
+    monitor: val/loss_simple_ema
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 16
+        in_channels: 32
+        out_channels: 32
+        model_channels: 256
+        attention_resolutions: [4, 1]
+        num_res_blocks: 2
+        channel_mult: [1, 4]
+        num_head_channels: 32
+    first_stage_config:
+      target: taming.models.vq.VQModel
+      params:
+        use_ema: true
+        model_type: "full"
+        stage: null
+        ddconfig:
+          double_z: False
+          z_channels: 32
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult: [1,1,2,2,4]  # num_down = len(ch_mult)-1
+          num_res_blocks: 2
+          attn_resolutions: [16]
+          dropout: 0.0
+        quantconfig:
+          target: taming.modules.vqvae.quantize.ASVQ
+          params:
+            n_e: 16384
+            e_dim: 32
+            beta: 0.33
+            legacy: false
+        lossconfig:
+          target: torch.nn.Identity
+        ckpt_path: "/mnt/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt"
+    cond_stage_config: null
+
+data:
+  class_path: main.DataModuleFromConfig
+  init_args:
+    batch_size: 32
+    num_workers: 8
+    train:
+      target: taming.data.faceshq.FFHQTrain
+      params:
+        size: 256
+        root: "/mnt/vq/data/ffhq" # Please specify your own path
+        list_file: "/mnt/vq/data/train.txt" # Please specify your own path
+    validation:
+      target: taming.data.faceshq.FFHQValidation
+      params:
+          size: 256
+          root: "/mnt/vq/data/ffhq" # Please specify your own path
+          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
+    test:
+      target: taming.data.faceshq.FFHQValidation
+      params:
+          size: 256
+          root: "/mnt/vq/data/ffhq" # Please specify your own path
+          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
