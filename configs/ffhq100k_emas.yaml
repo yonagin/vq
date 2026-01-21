@@ -5,14 +5,14 @@ trainer:
   devices: 2
   num_nodes: 1
   precision: 16-mixed
-  max_epochs: 250
+  max_epochs: 100
   check_val_every_n_epoch: 5
   num_sanity_val_steps: 0
   log_every_n_steps: 100
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/mnt/vq_log/ffhq_256" # Please specify your own path
+        dirpath: "/vq/vq_log/ffhq_256" # Please specify your own path
         save_top_k: -1 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -20,8 +20,8 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-        save_dir: "/mnt/vq/mnt/vq_log/ffhq_256" #Please specify your own path
-        version: "n16384_d32"
+        save_dir: "/vq/vq_log/ffhq_256" #Please specify your own path
+        version: "n100k_d32_emas"
         name:
 
 model:
@@ -41,12 +41,12 @@ model:
       dropout: 0.0
 
     quantconfig:
-      target: taming.modules.vqvae.quantize.VectorQuantizer
+      target: taming.modules.vqvae.quantize.ASVQ
       params:
         n_e: 100000
         e_dim: 32
         beta: 0.33
-        legacy: false
+        use_ema_scale: True
 
     lossconfig:
       target: taming.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
@@ -59,8 +59,8 @@ model:
 
     learning_rate: 5e-4
     scheduler_type: "linear-warmup_cosine-decay"
-    warmup_epochs: 10.0
-    min_learning_rate: 5e-6
+    warmup_epochs: 8.0
+    min_learning_rate: 1e-4
     use_ema: true
 
 data:
@@ -72,18 +72,12 @@ data:
       target: taming.data.faceshq.FFHQTrain
       params:
         size: 256
-        root: "/mnt/vq/data/ffhq" # Please specify your own path
-        list_file: "/mnt/vq/data/train.txt" # Please specify your own path
     validation:
       target: taming.data.faceshq.FFHQValidation
       params:
           size: 256
-          root: "/mnt/vq/data/ffhq" # Please specify your own path
-          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
     test:
       target: taming.data.faceshq.FFHQValidation
       params:
           size: 256
-          root: "/mnt/vq/data/ffhq" # Please specify your own path
-          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
 ckpt_path: null # to resume
