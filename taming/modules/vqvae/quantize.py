@@ -17,12 +17,12 @@ class GumbelQuantize(nn.Module):
     Categorical Reparameterization with Gumbel-Softmax, Jang et al. 2016
     https://arxiv.org/abs/1611.01144
     """
-    def __init__(self, num_hiddens, embedding_dim, n_embed, straight_through=True,
+    def __init__(self, num_hiddens, e_dim, n_embed, straight_through=True,
                  kl_weight=5e-4, temp_init=1.0, use_vqinterface=True,
                  remap=None, unknown_index="random"):
         super().__init__()
 
-        self.embedding_dim = embedding_dim
+        self.e_dim = e_dim
         self.n_embed = n_embed
 
         self.straight_through = straight_through
@@ -30,7 +30,7 @@ class GumbelQuantize(nn.Module):
         self.kl_weight = kl_weight
 
         self.proj = nn.Conv2d(num_hiddens, n_embed, 1)
-        self.embed = nn.Embedding(n_embed, embedding_dim)
+        self.embed = nn.Embedding(n_embed, e_dim)
 
         self.use_vqinterface = use_vqinterface
 
@@ -468,10 +468,10 @@ class ASVQ(nn.Module):
 
         self.register_buffer('base', torch.randn(n_e, e_dim))
         if self.use_ema_scale:
-            self.register_buffer('scale', torch.ones(embedding_dim) * self.embedding_dim ** -0.5)
+            self.register_buffer('scale', torch.ones(e_dim) * self.e_dim ** -0.5)
             self.register_buffer('ema_decay', torch.tensor(ema_decay))
         else:
-            self.scale = nn.Parameter(torch.ones(embedding_dim) * self.embedding_dim ** -0.5)
+            self.scale = nn.Parameter(torch.ones(e_dim) * self.e_dim ** -0.5)
         self.remap = remap
         if self.remap is not None:
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
