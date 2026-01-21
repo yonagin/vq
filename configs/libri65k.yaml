@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/vq_audio_log/libri65k_d32" # Please specify your own path
+        dirpath: "/mnt/vq/vq_audio_log/v65k_d32" # Please specify your own path
         monitor: "val_ema/reconstruct_loss"
         save_top_k: 5
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -21,7 +21,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/mnt/vq/vq_audio_log/libri65k_d32" #Please specify your own path
+      save_dir: "/mnt/vq/vq_audio_log/v65k_d32" #Please specify your own path
       version: "1second"
       name:
 
@@ -33,7 +33,7 @@ model:
       dimension: 32
     
     quantconfig:
-      target: taming.modules.vqvae.quantize.ASVQ1D
+      target: taming.modules.vqvae.quantize.VectorQuantizer1D
       params:
         n_e: 65536
         e_dim: 32
