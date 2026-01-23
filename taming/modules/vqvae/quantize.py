@@ -459,19 +459,24 @@ class SimVQ1D(SimVQ):
 
 class ASVQ(nn.Module):
     def __init__(self, n_e, e_dim, beta, remap=None, unknown_index="random",
-                 sane_index_shape=False, use_ema_scale=False, ema_decay=0.99,legacy=False):
+                 sane_index_shape=False, fixed_cb=False, use_ema_scale=True, ema_decay=0.99,legacy=False):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim
         self.beta = beta
+        self.fixed_cb = fixed_cb
         self.use_ema_scale = use_ema_scale
 
-        self.register_buffer('base', torch.randn(n_e, e_dim))
+
+        self.embedding = nn.Embedding(self.num_embeddings, self.embedding_dim)
+        nn.init.normal_(self.embedding.weight, mean=0, std=1)
+        self.embedding.weight.requires_grad = not fixed_cb
         if self.use_ema_scale:
             self.register_buffer('scale', torch.ones(e_dim) * self.e_dim ** -0.5)
             self.register_buffer('ema_decay', torch.tensor(ema_decay))
         else:
             self.scale = nn.Parameter(torch.ones(e_dim) * self.e_dim ** -0.5)
+
         self.remap = remap
         if self.remap is not None:
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
@@ -518,6 +523,12 @@ class ASVQ(nn.Module):
         batch_std = z.std(dim=0)  # [n]
         self.scale.mul_(self.ema_decay).add_(batch_std, alpha=1 - self.ema_decay)
 
+    def get_norm_cb(self):
+        weight = self.embedding.weight
+        std = weight.std(dim=0, keepdim=True).detach()
+        std = torch.clamp(std, min=1e-8)
+        return weight / std
+
     def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
@@ -529,7 +540,7 @@ class ASVQ(nn.Module):
         if self.use_ema_scale:
             self.update_scale(z_flattened)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        quant_codebook = self.scale * self.base 
+        quant_codebook = self.scale * self.get_norm_cb() 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
@@ -540,7 +551,7 @@ class ASVQ(nn.Module):
         min_encodings = None
 
         # compute loss for embedding
-        if self.use_ema_scale:
+        if self.use_ema_scale and self.fixed_cb:
             vq_loss = self.beta * torch.mean((z_q-z)**2)
         else:
             vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
@@ -594,7 +605,7 @@ class ASVQ1D(ASVQ):
         if self.use_ema_scale:
             self.update_scale(z_flattened)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        quant_codebook = self.scale * self.base 
+        quant_codebook = self.scale * self.get_norm_cb() 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
@@ -605,7 +616,7 @@ class ASVQ1D(ASVQ):
         min_encodings = None
 
         # compute loss for embedding
-        if self.use_ema_scale:
+        if self.use_ema_scale and self.fixed_cb:
             vq_loss = self.beta * torch.mean((z_q-z)**2)
         else:
             vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
