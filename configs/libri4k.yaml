@@ -38,7 +38,6 @@ model:
         n_e: 65536
         e_dim: 32
         beta: 0.33
-        use_ema_scale: False
 
 
     lossconfig:
