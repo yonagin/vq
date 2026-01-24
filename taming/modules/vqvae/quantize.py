@@ -464,10 +464,9 @@ class ASVQ(nn.Module):
         self.n_e = n_e
         self.e_dim = e_dim
         self.beta = beta
+        
         self.fixed_cb = fixed_cb
         self.use_ema_scale = use_ema_scale
-
-
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
         nn.init.normal_(self.embedding.weight, mean=0, std=1)
         self.embedding.weight.requires_grad = not fixed_cb
