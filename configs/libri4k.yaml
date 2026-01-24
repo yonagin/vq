@@ -33,7 +33,7 @@ model:
       dimension: 32
     
     quantconfig:
-      target: taming.modules.vqvae.quantize.VectorQuantizer1D
+      target: taming.modules.vqvae.quantize.ASVQ1D
       params:
         n_e: 4096
         e_dim: 32
