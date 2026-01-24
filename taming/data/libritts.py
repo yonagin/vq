@@ -92,7 +92,7 @@ class LibriTTSDev(LibriTTSBase):
             
 
 class LibriTTSTest(LibriTTSBase):
-    NAME = "test-other"
+    NAME = "test"
     
     def _load(self):
         txt_filelist = os.path.join(self.data_root, self.NAME + ".txt")
