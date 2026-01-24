@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/vq_audio_ckpt/vanilla_libri4k_d32" # Please specify your own path
+        dirpath: "/mnt/vq/vq_audio_ckpt/uf_libri4k_d32" # Please specify your own path
         monitor: "val_ema/reconstruct_loss"
         save_top_k: 2
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
