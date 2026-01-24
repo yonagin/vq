@@ -12,16 +12,16 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/vq_audio_log/libri65k_emas_d32" # Please specify your own path
+        dirpath: "/vq/vq_audio_ckpt/asvq_libri4k_d32" # Please specify your own path
         monitor: "val_ema/reconstruct_loss"
-        save_top_k: 5
+        save_top_k: 2
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/mnt/vq/vq_audio_log/libri65k_emas_d32" #Please specify your own path
+      save_dir: "/vq/vq_audio_log/asvq_libri4k_d32" #Please specify your own path
       version: "1second"
       name:
 
@@ -35,10 +35,9 @@ model:
     quantconfig:
       target: taming.modules.vqvae.quantize.ASVQ1D
       params:
-        n_e: 65536
+        n_e: 4096
         e_dim: 32
         beta: 0.33
-        use_ema_scale: True
 
 
     lossconfig:
