@@ -1,11 +1,3 @@
-import torch
-original_load = torch.load
-def safe_load(*args, **kwargs):
-    kwargs.pop('weights_only', None)       # 强行移除这个参数
-    return original_load(*args, **kwargs)
-
-torch.load = safe_load
-
 import os
 
 import fairseq
@@ -32,7 +24,7 @@ class UTMOSScore:
         filepath = os.path.join(os.path.dirname(__file__), ckpt_path)
         if not os.path.exists(filepath):
             download_file(UTMOS_CKPT_URL, filepath)
-        self.model = BaselineLightningModule.load_from_checkpoint(filepath,weights_only=False).eval().to(device)
+        self.model = BaselineLightningModule.load_from_checkpoint(filepath).eval().to(device)
 
     def score(self, wavs: torch.tensor) -> torch.tensor:
         """
