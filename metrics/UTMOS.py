@@ -81,7 +81,7 @@ def load_ssl_model(ckpt_path="wav2vec_small.pt"):
     if not os.path.exists(filepath):
         download_file(WAV2VEC_URL, filepath)
     SSL_OUT_DIM = 768
-    model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([filepath],weights_only=False)
+    model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([filepath])
     ssl_model = model[0]
     ssl_model.remove_pretraining_modules()
     return SSL_model(ssl_model, SSL_OUT_DIM)
