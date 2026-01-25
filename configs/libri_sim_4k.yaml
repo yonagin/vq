@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/vq_audio_ckpt/sim_libri4k_d32" # Please specify your own path
+        dirpath: "/vq/vq_audio_ckpt/sim_libri4k_d32" # Please specify your own path
         monitor: "val_ema/reconstruct_loss"
         save_top_k: 2
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -21,7 +21,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/mnt/vq/vq_audio_log/sim_libri4k_d32" #Please specify your own path
+      save_dir: "/vq/vq_audio_log/sim_libri4k_d32" #Please specify your own path
       version: "1second"
       name:
 
