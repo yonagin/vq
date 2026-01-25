@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore', module='torchaudio')
 warnings.filterwarnings('ignore', module='utmosv2')
 warnings.filterwarnings('ignore', module='transformers')
 
-from metrics.UTMOSv2 import UTMOSScore
+from metrics.UTMOS import UTMOSScore
 from metrics.periodicity import calculate_periodicity_metrics
 import torchaudio
 from pesq import pesq
