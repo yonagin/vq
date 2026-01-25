@@ -1,3 +1,11 @@
+import torch
+original_load = torch.load
+def safe_load(*args, **kwargs):
+    kwargs.pop('weights_only', None)       # 强行移除这个参数
+    return original_load(*args, **kwargs)
+
+torch.load = safe_load
+
 import os
 
 import fairseq
