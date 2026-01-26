@@ -14,7 +14,7 @@ trainer:
       init_args:
         dirpath: "/vq/vq_audio_ckpt/asvq_libri4k_d32" # Please specify your own path
         monitor: "val_ema/reconstruct_loss"
-        save_top_k: 2
+        save_top_k: 5
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -38,6 +38,8 @@ model:
         n_e: 4096
         e_dim: 32
         beta: 0.33
+        fixed_cb: true
+        use_ema_scale: false
 
 
     lossconfig:
