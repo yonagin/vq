@@ -27,7 +27,7 @@ trainer:
 model:
   class_path: taming.models.vq.VQModel
   init_args:
-    model_type: "light"  # Options: "light" (simpler, faster) or "full" (with attention and timestep support)
+    model_type: "full"  # Options: "light" (simpler, faster) or "full" (with attention and timestep support)
     ddconfig:
       double_z: False
       z_channels: 32

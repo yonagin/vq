@@ -641,21 +641,15 @@ class ASVQ1D(ASVQ):
 
 class VQ(nn.Module):
     def __init__(self, n_e, e_dim, beta, remap=None, unknown_index="random",
-                 sane_index_shape=False,use_ema_sigma=False, ema_decay=0.99,legacy=False):
+                 sane_index_shape=False, legacy=True):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim
         self.beta = beta
-        
-        self.fixed_cb = fixed_cb
-        self.use_ema_sigma = use_ema_sigma
-        self.register_buffer('base', torch.randn(n_e,e_dim))
-        if self.use_ema_sigma:
-            self.register_buffer('sigma', torch.ones(e_dim) * self.e_dim ** -0.5)
-            self.register_buffer('ema_decay', torch.tensor(ema_decay))
-        else:
-            self.sigma = nn.Parameter(torch.ones(e_dim) * self.e_dim ** -0.5)
+        self.legacy = legacy
 
+        self.register_buffer('base', torch.randn(n_e, e_dim))
+        self.sigma = nn.Parameter(torch.ones(e_dim) * (e_dim**-0.5))
         self.remap = remap
         if self.remap is not None:
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
@@ -695,26 +689,16 @@ class VQ(nn.Module):
         back=torch.gather(used[None,:][inds.shape[0]*[0],:], 1, inds)
         return back.reshape(ishape)
 
-    @torch.no_grad()
-    def update_sigma(self, z):
-        if not self.training:
-            return
-        batch_std = z.std(dim=0)  # [n]
-        self.sigma.mul_(self.ema_decay).add_(batch_std, alpha=1 - self.ema_decay)
-
-
-    def forward(self, z, temp=None, resigma_logits=False, return_logits=False):
+    def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
-        assert resigma_logits==False, "Only for interface compatible with Gumbel"
+        assert rescale_logits==False, "Only for interface compatible with Gumbel"
         assert return_logits==False, "Only for interface compatible with Gumbel"
         # reshape z -> (batch, height, width, channel) and flatten
         z = rearrange(z, 'b c h w -> b h w c').contiguous()
         assert z.shape[-1] == self.e_dim
         z_flattened = z.view(-1, self.e_dim)
-        if self.use_ema_sigma:
-            self.update_sigma(z_flattened)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        quant_codebook = self.sigma * self.base
+        quant_codebook = self.sigma * self.base 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(quant_codebook, 'n d -> d n'))
@@ -725,7 +709,11 @@ class VQ(nn.Module):
         min_encodings = None
 
         # compute loss for embedding
-        vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+        if not self.legacy:
+            vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+                   torch.mean((z_q - z.detach()) ** 2)
+        else:
+            vq_loss = torch.mean((z_q.detach()-z)**2) + self.beta * \
                    torch.mean((z_q - z.detach()) ** 2)
 
         # preserve gradients
