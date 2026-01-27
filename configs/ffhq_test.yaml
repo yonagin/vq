@@ -27,7 +27,7 @@ trainer:
 model:
   class_path: taming.models.vq.VQModel
   init_args:
-    model_type: "full"  # Options: "light" (simpler, faster) or "full" (with attention and timestep support)
+    model_type: "light"  # Options: "light" (simpler, faster) or "full" (with attention and timestep support)
     ddconfig:
       double_z: False
       z_channels: 32
@@ -41,7 +41,7 @@ model:
       dropout: 0.0
 
     quantconfig:
-      target: taming.modules.vqvae.quantize.SimVQ
+      target: taming.modules.vqvae.quantize.VQ
       params:
         n_e: 100000
         e_dim: 32
