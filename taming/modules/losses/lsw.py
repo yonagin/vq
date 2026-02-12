@@ -5,41 +5,6 @@ from torch import Tensor
 from typing import Optional, Callable
 from torch import Tensor
 
-
-class LSWLoss(nn.Module):
-    def __init__(self, lambda_lsw: float = 0.1, L: int = 64, p: float = 2.0, 
-                 projection_type: str = "base", q: float = 2.0):
-        super().__init__()
-        self.lambda_lsw = lambda_lsw
-        self.L = L
-        self.p = p
-        self.projection_type = projection_type
-        self.q = q
-        
-    def forward(self, ze_flat: Tensor, codebook: Tensor) -> Tensor:
-        """
-        Compute LSW loss between encoded features and codebook.
-        
-        Args:
-            ze_flat: Encoded features [N, D]
-            codebook: Codebook embeddings [M, D]
-            
-        Returns:
-            LSW loss scalar tensor
-        """
-        if self.lambda_lsw <= 0.0:
-            return torch.tensor(0.0, device=ze_flat.device, dtype=ze_flat.dtype)
-            
-        return self.lambda_lsw * lsw_dist(
-            ze_flat,
-            codebook,
-            L=self.L,
-            p=self.p,
-            projection_type=self.projection_type,
-            q=self.q
-        )
-
-
 def _quantile_linear(sorted_vals: Tensor, u: Tensor) -> Tensor:
     n, L = sorted_vals.shape
     u = u.view(-1, 1).clamp(0.0, 1.0)
@@ -193,3 +158,261 @@ def lsw_dist(
     # 最后按 L^p 范数取 1/p 次方
     distance = torch.clamp(lehmer_mean, min=0.0).pow(1.0 / p)
     return distance
+
+class LSWLoss(nn.Module):
+    def __init__(self, lambda_lsw: float = 0.1, L: int = 64, p: float = 2.0, 
+                 projection_type: str = "base", q: float = 2.0):
+        super().__init__()
+        self.lambda_lsw = lambda_lsw
+        self.L = L
+        self.p = p
+        self.projection_type = projection_type
+        self.q = q
+        
+    def forward(self, ze_flat: Tensor, codebook: Tensor) -> Tensor:
+        """
+        Compute LSW loss between encoded features and codebook.
+        
+        Args:
+            ze_flat: Encoded features [N, D]
+            codebook: Codebook embeddings [M, D]
+            
+        Returns:
+            LSW loss scalar tensor
+        """
+        if self.lambda_lsw <= 0.0:
+            return torch.tensor(0.0, device=ze_flat.device, dtype=ze_flat.dtype)
+            
+        return self.lambda_lsw * lsw_dist(
+            ze_flat,
+            codebook,
+            L=self.L,
+            p=self.p,
+            projection_type=self.projection_type,
+            q=self.q
+        )
+
+class SWDirLoss(nn.Module):
+    """
+    Sliced‑Wasserstein loss that matches softmax‑induced probability vectors
+    to a symmetric Dirichlet prior  Dir(α, …, α)  with  α = α₀ / K.
+
+    Parameters
+    ----------
+    num_embeddings : int
+        Codebook size K.
+    num_projections : int
+        Number of random Boolean masks M to draw per forward call.
+    temperature : float
+        Initial temperature for  softmax(−d / τ).
+    learnable_temperature : bool
+        If True, τ is a learnable parameter (softplus‑parameterised so τ > 0).
+    mask_sampling : str
+        How mask sizes are sampled.  One of
+        • "bernoulli"    – each entry iid Bernoulli(p_mask); size concentrates
+                           around K·p_mask.
+        • "uniform"      – mask size ~ Uniform{1, …, K−1}, then entries
+                           sampled uniformly for that size.
+        • "log_uniform"  – log₂(size) ~ Uniform[0, log₂(K−1)]; biases toward
+                           small masks → better sparse‑structure sensitivity.
+        • "mixture"      – equal‑weight mixture of the three above; gives
+                           broadest coverage.
+    p_mask : float
+        Bernoulli probability (only used when mask_sampling="bernoulli").
+    """
+
+    VALID_SAMPLINGS = {"mixture", "uniform", "log_uniform", "bernoulli"}
+
+    def __init__(
+        self,
+        num_embeddings: int = 8192,
+        alpha: float = 0.1,
+        num_projections: int = 64,
+        temperature: float = 1.0,
+        learnable_temperature: bool = False,
+        mask_sampling: str = "bernoulli",
+        p_mask: float = 0.5,
+    ):
+        super().__init__()
+        assert mask_sampling in self.VALID_SAMPLINGS, (
+            f"mask_sampling must be one of {self.VALID_SAMPLINGS}, "
+            f"got '{mask_sampling}'"
+        )
+
+        self.K = num_embeddings
+        self.alpha = alpha  # per-component concentration
+        self.M = num_projections
+        self.mask_sampling = mask_sampling
+        self.p_mask = p_mask
+
+        self.learnable_temperature = learnable_temperature
+        if learnable_temperature:
+            raw_init = math.log(math.expm1(temperature))  # inverse softplus
+            self._temperature_raw = nn.Parameter(torch.tensor(raw_init))
+        else:
+            self.register_buffer(
+                "_temperature_raw", torch.tensor(temperature)
+            )
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        """始终 > 0 的温度值."""
+        if self.learnable_temperature:
+            return F.softplus(self._temperature_raw)
+        return self._temperature_raw
+
+    # ─────────────────────── mask 采样 ───────────────────────
+
+    @torch.no_grad()
+    def _sizes_bernoulli(self, device) -> torch.Tensor:
+        """每个 entry 独立 Bernoulli(p_mask)，返回 mask sizes [M]."""
+        masks = torch.bernoulli(
+            torch.full((self.M, self.K), self.p_mask, device=device)
+        )
+        return masks  # 直接返回完整 mask 矩阵
+
+    @torch.no_grad()
+    def _sizes_uniform(self, M: int, device) -> torch.Tensor:
+        """size ~ Uniform{1, …, K−1}."""
+        return torch.randint(1, self.K, (M,), device=device)
+
+    @torch.no_grad()
+    def _sizes_log_uniform(self, M: int, device) -> torch.Tensor:
+        """log₂(size) ~ Uniform[0, log₂(K−1)] → 偏向小 mask."""
+        log_max = math.log2(max(self.K - 1, 1))
+        log_sizes = torch.empty(M, device=device).uniform_(0.0, log_max)
+        sizes = (2.0 ** log_sizes).round().clamp(1, self.K - 1).long()
+        return sizes
+
+    @torch.no_grad()
+    def _masks_from_sizes(self, sizes: torch.Tensor, device) -> torch.Tensor:
+        """
+        给定每个投影的 mask size，生成对应的 0/1 mask 矩阵 [M, K].
+        对每一行，随机选 size[i] 个位置置 1.
+        """
+        M = sizes.shape[0]
+        # 对每行生成随机排列，取前 size[i] 个
+        rand = torch.rand(M, self.K, device=device)
+        # 将 rand 按行排序，取 topk 等价：rank < size
+        ranks = rand.argsort(dim=1).argsort(dim=1)  # rank matrix [M, K]
+        masks = (ranks < sizes.unsqueeze(1)).float()
+        return masks
+
+    @torch.no_grad()
+    def _sample_masks(self, device) -> torch.Tensor:
+        """根据 self.mask_sampling 策略生成有效的 [M_valid, K] mask 矩阵."""
+        if self.mask_sampling == "bernoulli":
+            masks = self._sizes_bernoulli(device)
+
+        elif self.mask_sampling == "uniform":
+            sizes = self._sizes_uniform(self.M, device)
+            masks = self._masks_from_sizes(sizes, device)
+
+        elif self.mask_sampling == "log_uniform":
+            sizes = self._sizes_log_uniform(self.M, device)
+            masks = self._masks_from_sizes(sizes, device)
+
+        elif self.mask_sampling == "mixture":
+            # 将 M 个投影平均分给三种策略
+            m1 = self.M // 3
+            m2 = self.M // 3
+            m3 = self.M - m1 - m2
+
+            # bernoulli 部分
+            masks_bern = torch.bernoulli(
+                torch.full((m1, self.K), self.p_mask, device=device)
+            )
+
+            # uniform 部分
+            sizes_uni = self._sizes_uniform(m2, device)
+            masks_uni = self._masks_from_sizes(sizes_uni, device)
+
+            # log_uniform 部分
+            sizes_log = self._sizes_log_uniform(m3, device)
+            masks_log = self._masks_from_sizes(sizes_log, device)
+
+            masks = torch.cat([masks_bern, masks_uni, masks_log], dim=0)
+
+        else:
+            raise ValueError(f"Unknown mask_sampling: {self.mask_sampling}")
+
+        # 过滤全 0 或全 1 mask（使 Beta 分布参数合法）
+        mask_sums = masks.sum(dim=1)
+        valid = (mask_sums > 0) & (mask_sums < self.K)
+        return masks[valid]
+
+    # ─────────────────── target 采样 ─────────────────────────
+
+    @torch.no_grad()
+    def _sample_target(
+        self, mask_sizes: torch.Tensor, N: int, device
+    ) -> torch.Tensor:
+        """
+        从 Beta(m·α, (K−m)·α) 采样并排序.
+
+        当 α = α₀/K 时，参数变为
+            a = m · α₀ / K,   b = (K − m) · α₀ / K
+        总浓度 a + b = α₀（与 K 无关），只有比例 a/(a+b) = m/K 随 mask 变。
+        """
+        M_valid = mask_sizes.shape[0]
+
+        a = (mask_sizes * self.alpha).unsqueeze(1).expand(-1, N)  # [M, N]
+        b = ((self.K - mask_sizes) * self.alpha).unsqueeze(1).expand(-1, N)
+
+        # 防止极端小值导致数值问题
+        eps = 1e-6
+        a = a.clamp(min=eps)
+        b = b.clamp(min=eps)
+
+        beta_dist = Beta(a, b)
+        samples = beta_dist.sample()  # [M_valid, N]
+        sorted_target, _ = torch.sort(samples, dim=1)
+        return sorted_target
+
+    # ─────────────────── forward ─────────────────────────────
+
+    def forward(self, distances: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        distances : Tensor [N, K]
+            每个样本到 K 个 embedding 的距离.
+
+        Returns
+        -------
+        loss : scalar Tensor
+            所有有效投影方向上的平均 W₁ 距离.
+        """
+        device = distances.device
+        N, K = distances.shape
+        assert K == self.K, f"Expected K={self.K}, got {K}"
+
+        # ── 概率向量 ─────────────────────────────────────────
+        tau = self.temperature  # scalar tensor (可能带梯度)
+        P = F.softmax(-distances / tau, dim=-1)  # [N, K]
+
+        # ── 掩码 ─────────────────────────────────────────────
+        masks = self._sample_masks(device)  # [M_valid, K]
+        M_valid = masks.shape[0]
+        if M_valid == 0:
+            return distances.new_tensor(0.0, requires_grad=True)
+
+        # ── 掩码投影 + 排序 ──────────────────────────────────
+        proj_emp = masks @ P.t()  # [M_valid, N]
+        sorted_emp, _ = torch.sort(proj_emp, dim=1)  # [M_valid, N]
+
+        mask_sizes = masks.sum(dim=1)  # [M_valid]
+        sorted_tgt = self._sample_target(mask_sizes, N, device)  # [M_valid, N]
+
+        # ── W₁ ───────────────────────────────────────────────
+        w1 = (sorted_emp - sorted_tgt).abs().mean(dim=1)  # [M_valid]
+        return w1.mean()
+
+    def extra_repr(self) -> str:
+        tau = self.temperature.item() if self.temperature.numel() == 1 else "?"
+        return (
+            f"K={self.K}, α={self.alpha:.6g}, "
+            f"M={self.M}, τ={tau:.4f} "
+            f"({'learnable' if self.learnable_temperature else 'fixed'}), "
+            f"mask_sampling='{self.mask_sampling}'"
+        )
