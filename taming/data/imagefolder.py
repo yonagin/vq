@@ -1,143 +1,108 @@
 import os
-from typing import Optional, Sequence, Union, List, Any
-
+import numpy as np
+import albumentations
 from torch.utils.data import Dataset
-from torchvision import datasets, transforms
-from torchvision.transforms import InterpolationMode
+
+from taming.data.base import ImagePaths, NumpyPaths, ConcatDatasetWithIndex
 
 
-_INTERP_MAP = {
-    "nearest": InterpolationMode.NEAREST,
-    "bilinear": InterpolationMode.BILINEAR,
-    "bicubic": InterpolationMode.BICUBIC,
-    "lanczos": InterpolationMode.LANCZOS,
-    "hamming": InterpolationMode.HAMMING,
-    "box": InterpolationMode.BOX,
-}
-
-
-InterpolationLike = Union[str, InterpolationMode, None]
-
-
-def _resolve_interpolation(
-    mode: Optional[InterpolationLike],
-) -> Optional[InterpolationMode]:
-    if mode is None:
-        return None
-    if isinstance(mode, InterpolationMode):
-        return mode
-    key = str(mode).lower()
-    if key not in _INTERP_MAP:
-        raise ValueError(f"Unsupported interpolation mode: {mode}")
-    return _INTERP_MAP[key]
-
-
-def _default_transform(
-    resize: Optional[Union[int, Sequence[int]]] = 256,
-    crop_size: Optional[Union[int, Sequence[int]]] = None,
-    random_crop: bool = False,
-    random_flip: bool = False,
-    mean: Optional[Sequence[float]] = [0.5]*3,
-    std: Optional[Sequence[float]] = [0.5]*3,
-    interpolation: Optional[InterpolationLike] = InterpolationMode.BICUBIC,
-):
-    ops: List[Any] = []
-
-    if resize is not None:
-        ops.append(
-            transforms.Resize(
-                resize, interpolation=interpolation or InterpolationMode.BICUBIC
-            )
-        )
-
-    if crop_size is not None:
-        crop_cls = transforms.RandomCrop if random_crop else transforms.CenterCrop
-        ops.append(crop_cls(crop_size))
-
-    if random_flip:
-        ops.append(transforms.RandomHorizontalFlip())
-
-    ops.append(transforms.ToTensor())
-
-    if mean is not None and std is not None:
-        ops.append(transforms.Normalize(mean=mean, std=std))
-    else:
-        ops.append(transforms.Lambda(lambda t: t * 2.0 - 1.0))
-
-    return transforms.Compose(ops)
-
-
-class ImageFolderDataset(Dataset):
-    """Generic ImageFolder dataset that outputs dicts compatible with taming data pipeline."""
-
-    def __init__(
-        self,
-        data_dir: str,
-        transform: Optional[transforms.Compose] = None,
-        size: Optional[Union[int, Sequence[int]]] = 256,
-        crop_size: Optional[Union[int, Sequence[int]]] = None,
-        random_crop: bool = False,
-        random_flip: bool = False,
-        normalize_mean: Optional[Sequence[float]] = None,
-        normalize_std: Optional[Sequence[float]] = None,
-        interpolation: Optional[InterpolationLike] = InterpolationMode.BICUBIC,
-    ) -> None:
-        if not os.path.isdir(data_dir):
-            raise ValueError(f"ImageFolder path does not exist: {data_dir}")
-
-        self.data_dir = data_dir
-        self.dataset = datasets.ImageFolder(data_dir)
-        interp = _resolve_interpolation(interpolation)
-        self.transform = transform or _default_transform(
-            resize=size,
-            crop_size=crop_size,
-            random_crop=random_crop,
-            random_flip=random_flip,
-            mean=normalize_mean,
-            std=normalize_std,
-            interpolation=interp,
-        )
+class ImageFolderBase(Dataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.data = None
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.data)
 
-    def __getitem__(self, index):
-        image, label = self.dataset[index]
-        if self.transform is not None:
-            image = self.transform(image)
-
-        path, _ = self.dataset.samples[index]
-        class_name = self.dataset.classes[label]
-
-        return {
-            "image": image,
-            "class_label": label,
-            "class_name": class_name,
-            "file_path_": path,
-        }
+    def __getitem__(self, i):
+        example = self.data[i]
+        return example
 
 
-class ImageFolderTrain(ImageFolderDataset):
-    def __init__(self, train_dir: str, **kwargs) -> None:
-        super().__init__(
-            data_dir=train_dir, random_crop=True, random_flip=True, **kwargs
+def get_image_paths_from_folder(folder):
+    """
+    递归遍历文件夹，获取所有图片文件路径
+    支持常见图片格式: jpg, jpeg, png, bmp, gif, tiff, webp
+    """
+    VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
+    paths = []
+    
+    for root, dirs, files in os.walk(folder):
+        # 排序保证顺序一致性
+        dirs.sort()
+        files.sort()
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in VALID_EXTENSIONS:
+                full_path = os.path.join(root, file)
+                paths.append(full_path)
+    
+    return paths
+
+
+class ImageFolderTrain(ImageFolderBase):
+    def __init__(self, train_dir, size=256, random_crop=False, labels=None):
+        """
+        Args:
+            train_dir (str): 训练集文件夹路径，支持 ImageFolder 格式
+                             例如: /path/to/train/
+                                     ├── class1/
+                                     │   ├── img1.jpg
+                                     │   └── img2.jpg
+                                     └── class2/
+                                         ├── img3.jpg
+                                         └── img4.jpg
+            size (int): 图像resize的目标尺寸
+            random_crop (bool): 是否随机裁剪
+            labels (dict): 可选，额外的标签信息
+        """
+        super().__init__()
+        self.train_dir = train_dir
+        self.size = size
+        self.random_crop = random_crop
+
+        # 获取所有图片路径
+        paths = get_image_paths_from_folder(train_dir)
+        assert len(paths) > 0, f"No images found in {train_dir}"
+        print(f"[ImageFolderTrain] Found {len(paths)} images in {train_dir}")
+
+        self.data = ImagePaths(
+            paths=paths,
+            size=size,
+            random_crop=random_crop,
+            labels=labels
         )
 
 
-class ImageFolderValidation(ImageFolderDataset):
-    def __init__(self, val_dir: str, **kwargs) -> None:
-        super().__init__(
-            data_dir=val_dir, random_crop=False, random_flip=False, **kwargs
+class ImageFolderValidation(ImageFolderBase):
+    def __init__(self, val_dir, size=256, random_crop=False, labels=None):
+        """
+        Args:
+            val_dir (str): 验证集文件夹路径，支持 ImageFolder 格式
+                           例如: /path/to/val/
+                                   ├── class1/
+                                   │   ├── img1.jpg
+                                   │   └── img2.jpg
+                                   └── class2/
+                                       ├── img3.jpg
+                                       └── img4.jpg
+            size (int): 图像resize的目标尺寸
+            random_crop (bool): 是否随机裁剪
+            labels (dict): 可选，额外的标签信息
+        """
+        super().__init__()
+        self.val_dir = val_dir
+        self.size = size
+        self.random_crop = random_crop
+
+        # 获取所有图片路径
+        paths = get_image_paths_from_folder(val_dir)
+        assert len(paths) > 0, f"No images found in {val_dir}"
+        print(f"[ImageFolderValidation] Found {len(paths)} images in {val_dir}")
+
+        self.data = ImagePaths(
+            paths=paths,
+            size=size,
+            random_crop=random_crop,
+            labels=labels
         )
-
-
-def create_imagefolder_datasets(
-    train_dir: str,
-    val_dir: str,
-    **dataset_kwargs,
-):
-    """Utility to build ImageFolder train/val datasets with shared parameters."""
-
-    train_dataset = ImageFolderTrain(train_dir=train_dir, **dataset_kwargs)
-    val_dataset = ImageFolderValidation(val_dir=val_dir, **dataset_kwargs)
-    return train_dataset, val_dataset
