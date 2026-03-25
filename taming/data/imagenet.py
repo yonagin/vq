@@ -40,7 +40,6 @@ def str_to_indices(string):
 
 class ImageNetBase(Dataset):
     def __init__(self, size=0, subset=None, random_crop=True, hf_root=None):
-        # 直接接收参数，而不是通过config字典
         self.config = {
             "size": size,
             "subset": subset,
@@ -98,13 +97,11 @@ class ImageNetBase(Dataset):
             download(URL, self.idx2syn)
 
     def _load(self):
-        # 新增: 如果提供了 hf_root，就从本地 Arrow 数据集加载
         if getattr(self, "use_hf", False):
             from datasets import load_from_disk
             print(f"Loading pre-processed ImageNet (HF Arrow) from disk: {self.hf_root}")
 
             hf_dataset = load_from_disk(self.hf_root)
-            # 约定: train 类用 "train" split, val 类用 "validation" split
             split_name = "train" if getattr(self, "NAME", None) == "train" else "validation"
             hf_split = hf_dataset[split_name]
 
