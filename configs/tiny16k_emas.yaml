@@ -52,15 +52,13 @@ model:
       params:
         disc_conditional: False
         disc_in_channels: 3
-        disc_start: 0 # from 0 epoch
+        disc_start: 1000000000
         gen_loss_weight: 0.2
         vq_weight: 1.0
 
-    learning_rate: 5e-4
-    scheduler_type: "linear-warmup_cosine-decay"
-    warmup_epochs: 8.0
-    min_learning_rate: 1e-4
-    use_ema: true
+    learning_rate: 1e-4
+    scheduler_type: "None"
+    use_ema: True
 
 data:
   class_path: main.DataModuleFromConfig
