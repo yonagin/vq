@@ -11,7 +11,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/vq_log/ffhq_256" # Please specify your own path
+        dirpath: "/vq/vq_log/ffhq_256" # Please specify your own path
         save_top_k: -1 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -19,8 +19,8 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-        save_dir: "/mnt/vq/vq_log/ffhq_256" #Please specify your own path
-        version: "n16384_d32"
+        save_dir: "/vq/vq_log/ffhq_256" #Please specify your own path
+        version: "n16k_d32_emas"
         name:
 
 model:
@@ -42,11 +42,11 @@ model:
     quantconfig:
       target: taming.modules.vqvae.quantize.VQ
       params:
-        n_e: 100000
+        n_e: 16384
         e_dim: 32
         beta: 0.33
-        legacy: false
-
+        fixed_cb: false
+        use_ema_scale: true
     lossconfig:
       target: taming.modules.losses.DummyLoss
     learning_rate: 5e-4
