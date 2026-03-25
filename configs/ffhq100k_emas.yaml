@@ -46,7 +46,8 @@ model:
         n_e: 100000
         e_dim: 32
         beta: 0.33
-        use_ema_scale: True
+        fixed_cb: false
+        use_ema_scale: true
 
     lossconfig:
       target: taming.modules.losses.vqperceptual.VQLPIPSWithDiscriminator

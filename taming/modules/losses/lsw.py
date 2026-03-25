@@ -197,16 +197,6 @@ class SWDirLoss(nn.Module):
     Sliced‑Wasserstein loss that matches softmax‑induced probability vectors
     to a symmetric Dirichlet prior  Dir(α, …, α)  with  α = α₀ / K.
 
-    Parameters
-    ----------
-    num_embeddings : int
-        Codebook size K.
-    num_projections : int
-        Number of random Boolean masks M to draw per forward call.
-    temperature : float
-        Initial temperature for  softmax(−d / τ).
-    learnable_temperature : bool
-        If True, τ is a learnable parameter (softplus‑parameterised so τ > 0).
     mask_sampling : str
         How mask sizes are sampled.  One of
         • "bernoulli"    – each entry iid Bernoulli(p_mask); size concentrates
