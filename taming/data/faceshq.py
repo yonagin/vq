@@ -4,7 +4,6 @@ import albumentations
 from torch.utils.data import Dataset
 
 from taming.data.base import ImagePaths, NumpyPaths, ConcatDatasetWithIndex
-from taming.data.imagefolder import ImageFolderDataset  # re-export convenience
 
 
 class FacesBase(Dataset):
