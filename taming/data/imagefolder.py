@@ -74,7 +74,7 @@ class ImageFolderDataset(Dataset):
         self,
         data_dir: str,
         transform: Optional[transforms.Compose] = None,
-        resize: Optional[Union[int, Sequence[int]]] = 256,
+        size: Optional[Union[int, Sequence[int]]] = 256,
         crop_size: Optional[Union[int, Sequence[int]]] = None,
         random_crop: bool = False,
         random_flip: bool = False,
@@ -89,7 +89,7 @@ class ImageFolderDataset(Dataset):
         self.dataset = datasets.ImageFolder(data_dir)
         interp = _resolve_interpolation(interpolation)
         self.transform = transform or _default_transform(
-            resize=resize,
+            resize=size,
             crop_size=crop_size,
             random_crop=random_crop,
             random_flip=random_flip,
