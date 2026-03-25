@@ -81,4 +81,6 @@ data:
       target: taming.data.imagefolder.ImageFolderValidation
       params:
           size: 64
+          val_dir: "/vq/imagenet-50/val"
+
 ckpt_path: null # to resume
