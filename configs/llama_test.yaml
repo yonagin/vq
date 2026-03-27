@@ -73,7 +73,7 @@ model:
           attn_resolutions: [16]
           dropout: 0.0
         quantconfig:
-          target: taming.modules.vqvae.quantize.VectorQuantizer
+          target: taming.modules.vqvae.quantize.VQ
           params:
             n_e: 16384
             e_dim: 32
