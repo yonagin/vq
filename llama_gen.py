@@ -368,9 +368,11 @@ if __name__ == "__main__":
         config.model.init_args.first_stage_config
     )
     spatial_tokens = latent_hw * latent_hw
+    transformer_params = config.model.init_args.transformer_config.params
+    cls_token_num = transformer_params.get("cls_token_num", 0)
     steps = _compute_steps(
-        config.model.init_args.transformer_config.params.block_size,
-        config.model.init_args.transformer_config.params.cls_token_num,
+        transformer_params.block_size,
+        cls_token_num,
         spatial_tokens,
     )
 
