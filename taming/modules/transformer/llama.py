@@ -3,13 +3,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing import Optional
 
+
 ### from https://huggingface.co/transformers/v3.2.0/_modules/transformers/generation_utils.html
 def top_k_top_p_filtering(
-        logits,
-        top_k: int = 0,
-        top_p: float = 1.0,
-        filter_value: float = -float("Inf"),
-        min_tokens_to_keep: int = 1,
+    logits,
+    top_k: int = 0,
+    top_p: float = 1.0,
+    filter_value: float = -float("Inf"),
+    min_tokens_to_keep: int = 1,
 ):
     """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
     Args:
@@ -40,7 +41,9 @@ def top_k_top_p_filtering(
         sorted_indices_to_remove[..., 0] = 0
 
         # scatter sorted tensors to original indexing
-        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            1, sorted_indices, sorted_indices_to_remove
+        )
         logits[indices_to_remove] = filter_value
     return logits
 
@@ -52,7 +55,8 @@ def find_multiple(n: int, k: int):
 
 
 class GPTConfig:
-    """ base GPT config, params common to all GPT versions """
+    """base GPT config, params common to all GPT versions"""
+
     embd_pdrop = 0.1
     resid_pdrop = 0.1
     attn_pdrop = 0.1
@@ -64,7 +68,9 @@ class GPTConfig:
             setattr(self, k, v)
 
 
-def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):
+def drop_path(
+    x, drop_prob: float = 0.0, training: bool = False, scale_by_keep: bool = True
+):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
@@ -74,10 +80,12 @@ def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: b
     'survival rate' as the argument.
 
     """
-    if drop_prob == 0. or not training:
+    if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (
+        x.ndim - 1
+    )  # work with diff dim tensors, not just 2D ConvNets
     random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
     if keep_prob > 0.0 and scale_by_keep:
         random_tensor.div_(keep_prob)
@@ -85,10 +93,9 @@ def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: b
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
-    """
+    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
 
-    def __init__(self, drop_prob: float = 0., scale_by_keep: bool = True):
+    def __init__(self, drop_prob: float = 0.0, scale_by_keep: bool = True):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
         self.scale_by_keep = scale_by_keep
@@ -97,7 +104,7 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training, self.scale_by_keep)
 
     def extra_repr(self):
-        return f'drop_prob={round(self.drop_prob, 3):0.3f}'
+        return f"drop_prob={round(self.drop_prob, 3):0.3f}"
 
 
 ##Modified from https://github.com/FoundationVision/LlamaGen/blob/main/autoregressive/models/gpt.py
@@ -108,25 +115,33 @@ class LabelEmbedder(nn.Module):
 
     def __init__(self, num_classes, hidden_size, dropout_prob=0.1):
         super().__init__()
-        use_cfg_embedding = dropout_prob > 0
-        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)  # 1001
-        self.num_classes = num_classes
-        self.dropout_prob = dropout_prob
+        self.base_num_classes = max(num_classes, 0)
+        self.use_cfg_embedding = dropout_prob > 0 and self.base_num_classes > 0
+        table_classes = self.base_num_classes + int(self.use_cfg_embedding)
+        if table_classes == 0:
+            table_classes = 1  # placeholder embedding for unconditional runs
+        self.embedding_table = nn.Embedding(table_classes, hidden_size)
+        self.cfg_index = self.base_num_classes if self.use_cfg_embedding else None
+        self.dropout_prob = dropout_prob if self.use_cfg_embedding else 0.0
 
     def token_drop(self, labels, force_drop_ids=None):
         """
         Drops labels to enable classifier-free guidance.
         """
+        if not self.use_cfg_embedding:
+            return labels
         if force_drop_ids is None:
-            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+            drop_ids = (
+                torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+            )
         else:
             drop_ids = force_drop_ids == 1
-        labels = torch.where(drop_ids, self.num_classes, labels)
+        labels = torch.where(drop_ids, self.cfg_index, labels)
         return labels
 
     def forward(self, labels, train, force_drop_ids=None):
-        use_dropout = self.dropout_prob > 0
         labels = labels.squeeze(-1)  # [Batch]
+        use_dropout = self.use_cfg_embedding and self.dropout_prob > 0
         if (train and use_dropout) or (force_drop_ids is not None):
             labels = self.token_drop(labels, force_drop_ids)
         embeddings = self.embedding_table(labels).unsqueeze(1)
@@ -139,7 +154,7 @@ class MLP(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features, bias=False)
-        self.act = nn.GELU(approximate='tanh')
+        self.act = nn.GELU(approximate="tanh")
         self.fc2 = nn.Linear(hidden_features, out_features, bias=False)
 
     def forward(self, x):
@@ -155,7 +170,7 @@ class MLP_with_bias(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features, bias=True)
-        self.act = nn.GELU(approximate='tanh')
+        self.act = nn.GELU(approximate="tanh")
         self.fc2 = nn.Linear(hidden_features, out_features, bias=True)
 
     def forward(self, x):
@@ -205,7 +220,9 @@ class Attention(nn.Module):
         self.dim = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         self.n_head = config.n_head
-        self.n_kv_head = config.n_kv_head if config.n_kv_head is not None else config.n_head
+        self.n_kv_head = (
+            config.n_kv_head if config.n_kv_head is not None else config.n_head
+        )
         total_kv_dim = (self.n_head + 2 * self.n_kv_head) * self.head_dim
 
         # key, query, value projections for all heads, but in a batch
@@ -218,9 +235,11 @@ class Attention(nn.Module):
         self.resid_dropout = nn.Dropout(config.resid_dropout_p)
 
     def forward(
-            self, x: torch.Tensor, freqs_cis: torch.Tensor = None,
-            input_pos: Optional[torch.Tensor] = None,
-            mask: Optional[torch.Tensor] = None
+        self,
+        x: torch.Tensor,
+        freqs_cis: torch.Tensor = None,
+        input_pos: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         bsz, seqlen, _ = x.shape
         kv_size = self.n_kv_head * self.head_dim
@@ -243,10 +262,15 @@ class Attention(nn.Module):
         values = values.repeat_interleave(self.n_head // self.n_kv_head, dim=1)
 
         output = F.scaled_dot_product_attention(
-            xq, keys, values,
+            xq,
+            keys,
+            values,
             attn_mask=mask,
-            is_causal=True if mask is None else False,  # is_causal=False is for KV cache
-            dropout_p=self.attn_dropout_p if self.training else 0)
+            is_causal=True
+            if mask is None
+            else False,  # is_causal=False is for KV cache
+            dropout_p=self.attn_dropout_p if self.training else 0,
+        )
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
@@ -254,21 +278,30 @@ class Attention(nn.Module):
         return output
 
 
-def precompute_freqs_cis_2d(grid_size: int, n_elem: int, base: int = 10000, cls_token_num=120):
+def precompute_freqs_cis_2d(
+    grid_size: int, n_elem: int, base: int = 10000, cls_token_num=120
+):
     # split the dimension into half, one for x and one for y
     half_dim = n_elem // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half_dim, 2)[: (half_dim // 2)].float() / half_dim))
+    freqs = 1.0 / (
+        base ** (torch.arange(0, half_dim, 2)[: (half_dim // 2)].float() / half_dim)
+    )
     t = torch.arange(grid_size, device=freqs.device)
     freqs = torch.outer(t, freqs)  # (grid_size, head_dim // 2)
-    freqs_grid = torch.concat([
-        freqs[:, None, :].expand(-1, grid_size, -1),
-        freqs[None, :, :].expand(grid_size, -1, -1),
-    ], dim=-1)  # (grid_size, grid_size, head_dim // 2)
-    cache_grid = torch.stack([torch.cos(freqs_grid), torch.sin(freqs_grid)],
-                             dim=-1)  # (grid_size, grid_size, head_dim // 2, 2)
+    freqs_grid = torch.concat(
+        [
+            freqs[:, None, :].expand(-1, grid_size, -1),
+            freqs[None, :, :].expand(grid_size, -1, -1),
+        ],
+        dim=-1,
+    )  # (grid_size, grid_size, head_dim // 2)
+    cache_grid = torch.stack(
+        [torch.cos(freqs_grid), torch.sin(freqs_grid)], dim=-1
+    )  # (grid_size, grid_size, head_dim // 2, 2)
     cache = cache_grid.flatten(0, 1)
     cond_cache = torch.cat(
-        [torch.zeros(cls_token_num, n_elem // 2, 2), cache])  # (cls_token_num+grid_size**2, head_dim // 2, 2)
+        [torch.zeros(cls_token_num, n_elem // 2, 2), cache]
+    )  # (cls_token_num+grid_size**2, head_dim // 2, 2)
     return cond_cache
 
 
@@ -277,13 +310,20 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor):
     # freqs_cis (seq_len, head_dim // 2, 2)
     if not x.is_contiguous():
         x = x.contiguous()
-    xshaped = x.float().view(*x.shape[:-1], -1, 2) # (bs, seq_len, n_head, head_dim//2, 2)
-    freqs_cis = freqs_cis.view(1, xshaped.size(1), 1, xshaped.size(3), 2) # (1, seq_len, 1, head_dim//2, 2)
+    xshaped = x.float().view(
+        *x.shape[:-1], -1, 2
+    )  # (bs, seq_len, n_head, head_dim//2, 2)
+    freqs_cis = freqs_cis.view(
+        1, xshaped.size(1), 1, xshaped.size(3), 2
+    )  # (1, seq_len, 1, head_dim//2, 2)
     freqs_cis = freqs_cis.to(xshaped.dtype)
-    x_out2 = torch.stack([
+    x_out2 = torch.stack(
+        [
             xshaped[..., 0] * freqs_cis[..., 0] - xshaped[..., 1] * freqs_cis[..., 1],
             xshaped[..., 1] * freqs_cis[..., 0] + xshaped[..., 0] * freqs_cis[..., 1],
-    ], dim=-1)
+        ],
+        dim=-1,
+    )
     x_out2 = x_out2.flatten(3)
     # return x_out2.type_as(x)
     return x_out2
@@ -298,35 +338,61 @@ class Block(nn.Module):
         self.ffn_norm = RMSNorm(config.n_embd, eps=config.norm_eps)
         self.shared_aln = config.shared_aln
         if self.shared_aln:
-            self.ada_gss = nn.Parameter(torch.randn(1, 1, 6, config.n_embd) / config.n_embd ** 0.5)
+            self.ada_gss = nn.Parameter(
+                torch.randn(1, 1, 6, config.n_embd) / config.n_embd**0.5
+            )
         else:
             lin = nn.Linear(config.cond_dim, 6 * config.n_embd)
             self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
 
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.C = config.n_embd
 
     def forward(
-            self, x: torch.Tensor, cond_BD, freqs_cis: torch.Tensor, start_pos: int,
-            mask: Optional[torch.Tensor] = None):
+        self,
+        x: torch.Tensor,
+        cond_BD,
+        freqs_cis: torch.Tensor,
+        start_pos: int,
+        mask: Optional[torch.Tensor] = None,
+    ):
         if self.shared_aln:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond_BD).unbind(
-                2)  # 116C + B16C =unbind(2)=> 6 B1C
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (
+                self.ada_gss + cond_BD
+            ).unbind(2)  # 116C + B16C =unbind(2)=> 6 B1C
         else:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond_BD).view(-1, 1, 6, self.C).unbind(2)
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (
+                self.ada_lin(cond_BD).view(-1, 1, 6, self.C).unbind(2)
+            )
         h = x + self.drop_path(
-            self.attention(self.attention_norm(x).mul(scale1.add(1)).add_(shift1), freqs_cis, start_pos, mask).mul_(
-                gamma1))
-        out = h + self.drop_path(self.feed_forward(self.ffn_norm(h).mul(scale2.add(1)).add_(shift2)).mul(gamma2))
+            self.attention(
+                self.attention_norm(x).mul(scale1.add(1)).add_(shift1),
+                freqs_cis,
+                start_pos,
+                mask,
+            ).mul_(gamma1)
+        )
+        out = h + self.drop_path(
+            self.feed_forward(self.ffn_norm(h).mul(scale2.add(1)).add_(shift2)).mul(
+                gamma2
+            )
+        )
         return out
 
 
 class KVCache(nn.Module):
-    def __init__(self, max_batch_size, max_seq_length, n_head, head_dim, dtype):
+    def __init__(
+        self, max_batch_size, max_seq_length, n_head, head_dim, dtype, device=None
+    ):
         super().__init__()
+        device = device or torch.device("cpu")
         cache_shape = (max_batch_size, n_head, max_seq_length, head_dim)
-        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
-        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
+        self.register_buffer(
+            "k_cache", torch.zeros(cache_shape, dtype=dtype, device=device)
+        )
+        self.register_buffer(
+            "v_cache", torch.zeros(cache_shape, dtype=dtype, device=device)
+        )
 
     def update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
@@ -358,28 +424,68 @@ class SharedAdaLin(nn.Linear):
 
 
 class GPT(nn.Module):
-    def __init__(self, vocab_size, block_size, n_layer=12, n_head=8, n_embd=256, cond_dim=256,
-                 embd_pdrop=0., resid_dropout_p=0., attn_dropout_p=0., ffn_dropout_p=0.1, drop_path_rate=0.0,
-                 n_unmasked=0, max_batch_size=32, max_seq_len=2048, class_num=1000, token_drop=0.1, cls_token_num=1,
-                 rope_base=10000, norm_eps=1e-5, ffn_dim_multiplier=None,
-                 initalizer_range=0.02, multiple_of=256, n_kv_head=None, shared_aln=False, alng=1e-3,
-                 use_pretrained_codebook=False, codebook_ckpt_path=None, n_codebook_embd=256):
+    def __init__(
+        self,
+        vocab_size,
+        block_size,
+        n_layer=12,
+        n_head=8,
+        n_embd=256,
+        cond_dim=256,
+        embd_pdrop=0.0,
+        resid_dropout_p=0.0,
+        attn_dropout_p=0.0,
+        ffn_dropout_p=0.1,
+        drop_path_rate=0.0,
+        n_unmasked=0,
+        max_batch_size=32,
+        max_seq_len=2048,
+        class_num=1000,
+        token_drop=0.1,
+        cls_token_num=1,
+        rope_base=10000,
+        norm_eps=1e-5,
+        ffn_dim_multiplier=None,
+        initalizer_range=0.02,
+        multiple_of=256,
+        n_kv_head=None,
+        shared_aln=False,
+        alng=1e-3,
+        use_pretrained_codebook=False,
+        codebook_ckpt_path=None,
+        n_codebook_embd=256,
+    ):
         super().__init__()
 
-        self.config = GPTConfig(vocab_size=vocab_size, block_size=block_size, cond_dim=cond_dim,
-                                embd_pdrop=embd_pdrop, resid_dropout_p=resid_dropout_p, attn_dropout_p=attn_dropout_p,
-                                n_layer=n_layer, n_head=n_head, n_embd=n_embd, ffn_dropout_p=ffn_dropout_p,
-                                drop_path_rate=drop_path_rate,
-                                n_unmasked=n_unmasked, class_num=class_num,
-                                token_drop=token_drop, cls_token_num=cls_token_num, rope_base=rope_base,
-                                norm_eps=norm_eps,
-                                ffn_dim_multiplier=ffn_dim_multiplier, initializer_range=initalizer_range,
-                                multiple_of=multiple_of,
-                                max_batch_size=max_batch_size, max_seq_len=max_seq_len, n_kv_head=n_kv_head,
-                                shared_aln=shared_aln,
-                                use_pretrained_codebook=use_pretrained_codebook,
-                                codebook_ckpt_path=codebook_ckpt_path, n_codebook_embd=n_codebook_embd
-                                )
+        self.config = GPTConfig(
+            vocab_size=vocab_size,
+            block_size=block_size,
+            cond_dim=cond_dim,
+            embd_pdrop=embd_pdrop,
+            resid_dropout_p=resid_dropout_p,
+            attn_dropout_p=attn_dropout_p,
+            n_layer=n_layer,
+            n_head=n_head,
+            n_embd=n_embd,
+            ffn_dropout_p=ffn_dropout_p,
+            drop_path_rate=drop_path_rate,
+            n_unmasked=n_unmasked,
+            class_num=class_num,
+            token_drop=token_drop,
+            cls_token_num=cls_token_num,
+            rope_base=rope_base,
+            norm_eps=norm_eps,
+            ffn_dim_multiplier=ffn_dim_multiplier,
+            initializer_range=initalizer_range,
+            multiple_of=multiple_of,
+            max_batch_size=max_batch_size,
+            max_seq_len=max_seq_len,
+            n_kv_head=n_kv_head,
+            shared_aln=shared_aln,
+            use_pretrained_codebook=use_pretrained_codebook,
+            codebook_ckpt_path=codebook_ckpt_path,
+            n_codebook_embd=n_codebook_embd,
+        )
 
         ## Embedding Layer
         # input embedding stem
@@ -391,49 +497,72 @@ class GPT(nn.Module):
             self.embedding_projection = MLP_with_bias(n_codebook_embd, n_embd, n_embd)
         else:
             self.tok_emb = nn.Embedding(self.config.vocab_size, self.config.n_embd)
-        self.class_emb = LabelEmbedder(self.config.class_num, self.config.n_embd)  # for class conditional
+        self.class_emb = LabelEmbedder(
+            self.config.class_num, self.config.n_embd
+        )  # for class conditional
 
         self.token_drop = nn.Dropout(self.config.token_drop)
-        dpr = [x.item() for x in torch.linspace(0, self.config.drop_path_rate, self.config.n_layer)]
+        dpr = [
+            x.item()
+            for x in torch.linspace(0, self.config.drop_path_rate, self.config.n_layer)
+        ]
 
         # transformer
         self.blocks = nn.ModuleList()
         for idx in range(self.config.n_layer):
             self.blocks.append(Block(self.config, dpr[idx]))
 
-        self.shared_ada_lin = nn.Sequential(nn.SiLU(inplace=False), SharedAdaLin(self.config.cond_dim,
-                                                                                 6 * self.config.n_embd)) if shared_aln else nn.Identity()
+        self.shared_ada_lin = (
+            nn.Sequential(
+                nn.SiLU(inplace=False),
+                SharedAdaLin(self.config.cond_dim, 6 * self.config.n_embd),
+            )
+            if shared_aln
+            else nn.Identity()
+        )
         # output layer
         self.head_nm = AdaLNBeforeHead(self.config.n_embd, self.config.n_embd)
         self.head = nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
 
         # 2d rotary pos embedding
-        grid_size = int(self.config.block_size ** 0.5)
+        grid_size = int(self.config.block_size**0.5)
         assert grid_size * grid_size == self.config.block_size
-        self.freqs_cis = precompute_freqs_cis_2d(grid_size, self.config.n_embd // self.config.n_head,
-                                                 self.config.rope_base, self.config.cls_token_num)
+        self.freqs_cis = precompute_freqs_cis_2d(
+            grid_size,
+            self.config.n_embd // self.config.n_head,
+            self.config.rope_base,
+            self.config.cls_token_num,
+        )
 
         self.max_batch_size = -1
         self.max_seq_length = -1
 
         self.initalize_weights(init_adaln_gamma=alng)  ## initalize the weight
 
-
     def load_pretrained_codebook(self, ckpt_path):
-        self.tok_emb.weight.data = torch.load(ckpt_path, map_location="cpu")["state_dict"]["quantize.embedding.weight"]
+        self.tok_emb.weight.data = torch.load(ckpt_path, map_location="cpu")[
+            "state_dict"
+        ]["quantize.embedding.weight"]
         self.tok_emb.weight.data = self.tok_emb.weight.data.float()
         self.tok_emb.weight.required_grad = False
         print(f"Transformer Embedding initialized from {ckpt_path}")
 
-    def initalize_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02):
+    def initalize_weights(
+        self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02
+    ):
         ## initalize the weight of linear and embedding
         self.apply(self._init_weights)
 
         for block in self.blocks:  ## specific for AdaLN
             if hasattr(block, "ada_lin"):
-                block.ada_lin[-1].weight.data[2 * self.config.n_embd:].mul_(init_adaln)
-                block.ada_lin[-1].weight.data[:2 * self.config.n_embd].mul_(init_adaln_gamma)
-                if hasattr(block.ada_lin[-1], "bias") and block.ada_lin[-1].bias is not None:
+                block.ada_lin[-1].weight.data[2 * self.config.n_embd :].mul_(init_adaln)
+                block.ada_lin[-1].weight.data[: 2 * self.config.n_embd].mul_(
+                    init_adaln_gamma
+                )
+                if (
+                    hasattr(block.ada_lin[-1], "bias")
+                    and block.ada_lin[-1].bias is not None
+                ):
                     block.ada_lin[-1].bias.data.zero_()
             elif hasattr(block, "ada_gss"):
                 block.ada_gss.data[:, :, 2:].mul_(init_adaln)
@@ -442,7 +571,10 @@ class GPT(nn.Module):
         ## Adaln Head
         if isinstance(self.head_nm, AdaLNBeforeHead):
             self.head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
-            if hasattr(self.head_nm.ada_lin[-1], 'bias') and self.head_nm.ada_lin[-1].bias is not None:
+            if (
+                hasattr(self.head_nm.ada_lin[-1], "bias")
+                and self.head_nm.ada_lin[-1].bias is not None
+            ):
                 self.head_nm.ada_lin[-1].bias.data.zero_()
 
         ### Zero-out output layer
@@ -458,37 +590,62 @@ class GPT(nn.Module):
             if not self.use_pretrained_codebook:
                 module.weight.data.normal_(mean=0.0, std=std)
 
-    def setup_caches(self, max_batch_size, max_seq_length, dtype):
+    def setup_caches(self, max_batch_size, max_seq_length, dtype, device=None):
         # if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
         #     return
+        device = device or self.head.weight.device
         head_dim = self.config.n_embd // self.config.n_head
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length
         self.max_batch_size = max_batch_size
         for b in self.blocks:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_head, head_dim, dtype)
+            b.attention.kv_cache = KVCache(
+                max_batch_size,
+                max_seq_length,
+                self.config.n_head,
+                head_dim,
+                dtype,
+                device=device,
+            )
 
-        causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
+        causal_mask = torch.tril(
+            torch.ones(
+                self.max_seq_length,
+                self.max_seq_length,
+                dtype=torch.bool,
+                device=device,
+            )
+        )
         self.causal_mask = causal_mask.unsqueeze(0).repeat(self.max_batch_size, 1, 1)
-        grid_size = int(self.config.block_size ** 0.5)
+        grid_size = int(self.config.block_size**0.5)
         assert grid_size * grid_size == self.config.block_size
-        self.freqs_cis = precompute_freqs_cis_2d(grid_size, self.config.n_embd // self.config.n_head,
-                                                 self.config.rope_base, self.config.cls_token_num)
+        self.freqs_cis = precompute_freqs_cis_2d(
+            grid_size,
+            self.config.n_embd // self.config.n_head,
+            self.config.rope_base,
+            self.config.cls_token_num,
+        ).to(device)
 
     def forward(
-            self, idx, input_pos=None, mask=None, targets=None,
+        self,
+        idx,
+        input_pos=None,
+        mask=None,
+        targets=None,
     ):
         idx, idx_cls = idx[0], idx[1]
         token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
         if self.use_pretrained_codebook:
             token_embeddings = self.embedding_projection(token_embeddings)
-        cls_token_embeddings = self.class_emb(idx_cls, train=self.training)[:, :self.config.cls_token_num]
+        cls_token_embeddings = self.class_emb(idx_cls, train=self.training)[
+            :, : self.config.cls_token_num
+        ]
         token_embeddings = torch.concat([cls_token_embeddings, token_embeddings], dim=1)
         h = self.token_drop(token_embeddings)
 
         cond_BD = self.shared_ada_lin(cls_token_embeddings)
         # for training and evaluation
-        freqs_cis = self.freqs_cis[:token_embeddings.shape[1]]  # seq_len
+        freqs_cis = self.freqs_cis[: token_embeddings.shape[1]]  # seq_len
         freqs_cis = freqs_cis.to(h.device)
         for block in self.blocks:
             h = block(h, cond_BD, freqs_cis, input_pos, mask)
@@ -502,7 +659,13 @@ class GPT(nn.Module):
 
         return logits, loss
 
-    def decode_tokens(self, idx, input_pos=None, targets=None, first_step=False, ):
+    def decode_tokens(
+        self,
+        idx,
+        input_pos=None,
+        targets=None,
+        first_step=False,
+    ):
         """
         Inference Only
         """
@@ -511,7 +674,9 @@ class GPT(nn.Module):
             token_embeddings = cond_BD = self.class_emb(idx, train=self.training)
         else:  #
             idx, cls_idx = idx[0], idx[1]
-            token_embeddings = self.tok_emb(idx)  # each index maps to a (learnable) vector
+            token_embeddings = self.tok_emb(
+                idx
+            )  # each index maps to a (learnable) vector
             if self.use_pretrained_codebook:
                 token_embeddings = self.embedding_projection(token_embeddings)
             cond_BD = self.class_emb(cls_idx, train=self.training)
@@ -521,7 +686,9 @@ class GPT(nn.Module):
         mask = self.causal_mask[:bs, None, input_pos]
         h = self.token_drop(token_embeddings)
 
-        freq_cis = self.freqs_cis[input_pos]  # (cls_token_num+grid_size**2, head_dim // 2, 2) shape
+        freq_cis = self.freqs_cis[
+            input_pos
+        ]  # (cls_token_num+grid_size**2, head_dim // 2, 2) shape
         freq_cis = freq_cis.to(h.device)
         for block in self.blocks:
             h = block(h, cond_BD, freq_cis, input_pos, mask)
@@ -537,24 +704,45 @@ class GPT(nn.Module):
 
 
 @torch.no_grad()
-def sample(x, model, steps, temperature=1., sample_logits=True,
-           top_k=None, top_p=None, cfg_scale=1.0, num_samples=16,
-           sos_token=0, callback=None, token_factorization=False):
-    # if x is unconditional input
-    if x is None:
+def sample(
+    x,
+    model,
+    steps,
+    temperature=1.0,
+    sample_logits=True,
+    top_k=None,
+    top_p=None,
+    cfg_scale=1.0,
+    num_samples=16,
+    sos_token=0,
+    callback=None,
+    token_factorization=False,
+):
+    provided_unconditional = x is None
+    if provided_unconditional:
         device = next(model.parameters()).device
         x = torch.full((num_samples, 1), sos_token, device=device, dtype=torch.long)
+    else:
+        device = x.device
+
+    if cfg_scale > 1.0:
+        if provided_unconditional:
+            x = torch.cat([x, x], dim=0)
+        elif x.shape[0] % 2 != 0:
+            raise ValueError(
+                "cfg_scale > 1.0 requires an even batch dimension with paired "
+                "conditional/unconditional tokens."
+            )
 
     bs, _ = x.shape
-    device = x.device
     assert x is not None
-    
+
     # Initialize cond_token for all cases
     cond_token = None
-    
+
     if cfg_scale > 1.0:
         cond_token, uncond_token = torch.split(x, bs // 2, dim=0)
-        sample = cond_token
+        sample = torch.cat([cond_token, uncond_token], dim=0)
     else:
         sample = x
         # Store the class token for unconditional generation
@@ -567,10 +755,13 @@ def sample(x, model, steps, temperature=1., sample_logits=True,
         max_batch_size = x.shape[0]
 
     max_seq_length = cond_len + steps
-    with torch.device(device):
-        max_batch_size_cfg = max_batch_size * 2 if cfg_scale > 1.0 else max_batch_size
-        model.setup_caches(max_batch_size=max_batch_size_cfg, max_seq_length=max_seq_length,
-                           dtype=model.class_emb.embedding_table.weight.dtype)
+    max_batch_size_cfg = max_batch_size * 2 if cfg_scale > 1.0 else max_batch_size
+    model.setup_caches(
+        max_batch_size=max_batch_size_cfg,
+        max_seq_length=max_seq_length,
+        dtype=model.class_emb.embedding_table.weight.dtype,
+        device=device,
+    )
 
     for n in range(steps):
         if n == 0:  # prefill operation
@@ -600,15 +791,13 @@ def sample(x, model, steps, temperature=1., sample_logits=True,
             # append to the sequence and continue
             sample = torch.cat((sample, x), dim=1)
             if cfg_scale > 1.0:
-                x = (torch.concat([x, x]),  torch.concat([cond_token, uncond_token]))
+                x = (
+                    torch.cat([x, x], dim=0),
+                    torch.cat([cond_token, uncond_token], dim=0),
+                )
             else:
                 x = (x, cond_token)
     sample = sample[:, cond_len:]  # cut conditioning off
+    if cfg_scale > 1.0:
+        sample = torch.split(sample, bs // 2, dim=0)[0]
     return sample
-
-
-
-
-
-
-

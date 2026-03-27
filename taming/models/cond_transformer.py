@@ -1,5 +1,5 @@
 """
-Refer to 
+Refer to
 https://github.com/FoundationVision/LlamaGen
 https://github.com/FoundationVision/VAR
 """
@@ -21,26 +21,27 @@ def disabled_train(self, mode=True):
 
 
 class Net2NetTransformer(L.LightningModule):
-    def __init__(self,
-                transformer_config,
-                first_stage_config,
-                cond_stage_config,
-                model_path=None,
-                ignore_keys=[],
-                first_stage_key="image",
-                cond_stage_key="depth",
-                downsample_cond_size=-1,
-                pkeep=1.0,
-                sos_token=0,
-                unconditional=False,
-                learning_rate=None,
-                weight_decay=1e-2,
-                use_pretrained_codebook=False,
-                wp = 0,
-                wp0 = 0.005, #initial lr ratio at the begging of lr warm up
-                wpe = 0.01, #final lr ratio at the end of training
-                twde = 0,
-                 ):
+    def __init__(
+        self,
+        transformer_config,
+        first_stage_config,
+        cond_stage_config,
+        model_path=None,
+        ignore_keys=[],
+        first_stage_key="image",
+        cond_stage_key="depth",
+        downsample_cond_size=-1,
+        pkeep=1.0,
+        sos_token=0,
+        unconditional=False,
+        learning_rate=None,
+        weight_decay=1e-2,
+        use_pretrained_codebook=False,
+        wp=0,
+        wp0=0.005,  # initial lr ratio at the begging of lr warm up
+        wpe=0.01,  # final lr ratio at the end of training
+        twde=0,
+    ):
         super().__init__()
 
         self.be_unconditional = unconditional
@@ -68,9 +69,18 @@ class Net2NetTransformer(L.LightningModule):
 
         self.strict_loading = False
 
-    def state_dict(self, *kwargs, destination=None, prefix='', keep_vars=False):
-        return {k: v for k, v in super().state_dict(*kwargs, destination, prefix, keep_vars).items() if
-                ("inception_model" not in k and "lpips_vgg" not in k and "lpips_alex" not in k)}
+    def state_dict(self, *kwargs, destination=None, prefix="", keep_vars=False):
+        return {
+            k: v
+            for k, v in super()
+            .state_dict(*kwargs, destination, prefix, keep_vars)
+            .items()
+            if (
+                "inception_model" not in k
+                and "lpips_vgg" not in k
+                and "lpips_alex" not in k
+            )
+        }
 
     def load_state_dict(self, *args, strict=False):
         """
@@ -100,8 +110,10 @@ class Net2NetTransformer(L.LightningModule):
             print("Using first stage also as cond stage.")
             self.cond_stage_model = self.first_stage_model
         elif config == "__is_unconditional__" or self.be_unconditional:
-            print(f"Using no cond stage. Assuming the training is intended to be unconditional. "
-                  f"Prepending {self.sos_token} as a sos token.")
+            print(
+                f"Using no cond stage. Assuming the training is intended to be unconditional. "
+                f"Prepending {self.sos_token} as a sos token."
+            )
             self.be_unconditional = True
             self.cond_stage_key = self.first_stage_key
             self.cond_stage_model = SOSProvider(self.sos_token)
@@ -117,10 +129,13 @@ class Net2NetTransformer(L.LightningModule):
         _, c_indices = self.encode_to_c(c)
 
         if self.training and self.pkeep < 1.0:
-            mask = torch.bernoulli(self.pkeep * torch.ones(z_indices.shape,
-                                                           device=z_indices.device))
+            mask = torch.bernoulli(
+                self.pkeep * torch.ones(z_indices.shape, device=z_indices.device)
+            )
             mask = mask.round().to(dtype=torch.int64)
-            r_indices = torch.randint_like(z_indices, self.transformer.config.vocab_size)
+            r_indices = torch.randint_like(
+                z_indices, self.transformer.config.vocab_size
+            )
             a_indices = mask * z_indices + (1 - mask) * r_indices
         else:
             a_indices = z_indices
@@ -132,16 +147,15 @@ class Net2NetTransformer(L.LightningModule):
         cz_indices = (a_indices[:, :-1], c_indices)  # not token factorization
         logits, _ = self.transformer(cz_indices)
         # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
-        logits = logits[:, c_indices.shape[1] - 1:]
+        logits = logits[:, c_indices.shape[1] - 1 :]
 
         return logits, target
 
     def top_k_logits(self, logits, k):
         v, ix = torch.topk(logits, k)
         out = logits.clone()
-        out[out < v[..., [-1]]] = -float('Inf')
+        out[out < v[..., [-1]]] = -float("Inf")
         return out
-
 
     @torch.no_grad()
     def encode_to_z(self, x):
@@ -152,7 +166,9 @@ class Net2NetTransformer(L.LightningModule):
     @torch.no_grad()
     def encode_to_c(self, c):
         if self.downsample_cond_size > -1:
-            c = F.interpolate(c, size=(self.downsample_cond_size, self.downsample_cond_size))
+            c = F.interpolate(
+                c, size=(self.downsample_cond_size, self.downsample_cond_size)
+            )
         quant_c, _, [_, _, indices] = self.cond_stage_model.encode(c)
         if len(indices.shape) > 2:
             indices = indices.view(c.shape[0], -1)
@@ -161,8 +177,7 @@ class Net2NetTransformer(L.LightningModule):
     @torch.no_grad()
     def decode_to_img(self, index, zshape):
         bhwc = (zshape[0], zshape[2], zshape[3], zshape[1])
-        quant_z = self.first_stage_model.quantize.get_codebook_entry(
-            index, shape=bhwc)
+        quant_z = self.first_stage_model.quantize.get_codebook_entry(index, shape=bhwc)
         x = self.first_stage_model.decode(quant_z)
         return x
 
@@ -192,20 +207,37 @@ class Net2NetTransformer(L.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
-        iters_train = len(self.trainer.train_dataloader) ## get the total iterations in a epoch
+        iters_train = len(
+            self.trainer.train_dataloader
+        )  ## get the total iterations in a epoch
         g_it = self.trainer.global_step
         max_it = self.trainer.max_epochs * iters_train
-        wp_it = self.wp * iters_train
-        min_tlr, max_tlr, min_twd, max_twd = self.lr_wd_annealing(self.learning_rate, self.weight_decay, self.twde, g_it, wp_it, max_it, wp0=self.wp0, wpe=self.wpe)
+        if self.wp >= 1:
+            wp_it = self.wp * iters_train
+        else:
+            wp_it = max(int(self.wp * max_it), 1)
+        min_tlr, max_tlr, min_twd, max_twd = self.lr_wd_annealing(
+            self.learning_rate,
+            self.weight_decay,
+            self.twde,
+            g_it,
+            wp_it,
+            max_it,
+            wp0=self.wp0,
+            wpe=self.wpe,
+        )
         loss = self.shared_step(batch, batch_idx)
-        self.log("train/loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log(
+            "train/loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self.shared_step(batch, batch_idx)
-        self.log("val/loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log(
+            "val/loss", loss, prog_bar=True, logger=True, on_step=True, on_epoch=True
+        )
         return loss
-    
 
     def configure_optimizers(self):
         """
@@ -219,48 +251,59 @@ class Net2NetTransformer(L.LightningModule):
 
         optim_groups = [
             {"params": decay_params, "weight_decay": self.weight_decay},
-            {"params": nodecay_params, "weight_decay": 0.0}
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
 
         # fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         fused_available = False
         extra_args = dict(fused=True) if fused_available else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95), **extra_args)
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=self.learning_rate, betas=(0.9, 0.95), **extra_args
+        )
 
         return optimizer
-    
-    def lr_wd_annealing(self, peak_lr, wd, wd_end, cur_it, wp_it, max_it, wp0=0.005, wpe=0.001):
+
+    def lr_wd_annealing(
+        self, peak_lr, wd, wd_end, cur_it, wp_it, max_it, wp0=0.005, wpe=0.001
+    ):
         """
         Modified from VAR
         """
         wp_it = round(wp_it)
         if cur_it < wp_it:
-            cur_lr = wp0 + (1-wp0) * cur_it / wp_it
+            cur_lr = wp0 + (1 - wp0) * cur_it / wp_it
         else:
-            pasd = (cur_it - wp_it) / (max_it-1 - wp_it)   # [0, 1]
-            rest = 1 - pasd     # [1, 0]
+            pasd = (cur_it - wp_it) / (max_it - 1 - wp_it)  # [0, 1]
+            rest = 1 - pasd  # [1, 0]
             ## using linear decay by default
-            T = 0.05; max_rest = 1-T
-            if pasd < T: cur_lr = 1
-            else: cur_lr = wpe + (1-wpe) * rest / max_rest
+            T = 0.05
+            max_rest = 1 - T
+            if pasd < T:
+                cur_lr = 1
+            else:
+                cur_lr = wpe + (1 - wpe) * rest / max_rest
 
         cur_lr *= peak_lr
-        pasd = cur_it / (max_it-1)
+        pasd = cur_it / (max_it - 1)
         cur_wd = wd_end + (wd - wd_end) * (0.5 + 0.5 * math.cos(math.pi * pasd))
-    
+
         inf = 1e6
         min_lr, max_lr = inf, -1
         min_wd, max_wd = inf, -1
         for param_group in self.optimizers().param_groups:
-            param_group['lr'] = cur_lr * param_group.get('lr_sc', 1)    # 'lr_sc' could be assigned
-            max_lr = max(max_lr, param_group['lr'])
-            min_lr = min(min_lr, param_group['lr'])
-            
-            param_group['weight_decay'] = cur_wd * param_group.get('wd_sc', 1)
-            max_wd = max(max_wd, param_group['weight_decay'])
-            if param_group['weight_decay'] > 0:
-                min_wd = min(min_wd, param_group['weight_decay'])
+            param_group["lr"] = cur_lr * param_group.get(
+                "lr_sc", 1
+            )  # 'lr_sc' could be assigned
+            max_lr = max(max_lr, param_group["lr"])
+            min_lr = min(min_lr, param_group["lr"])
 
-        if min_lr == inf: min_lr = -1
-        if min_wd == inf: min_wd = -1
+            param_group["weight_decay"] = cur_wd * param_group.get("wd_sc", 1)
+            max_wd = max(max_wd, param_group["weight_decay"])
+            if param_group["weight_decay"] > 0:
+                min_wd = min(min_wd, param_group["weight_decay"])
+
+        if min_lr == inf:
+            min_lr = -1
+        if min_wd == inf:
+            min_wd = -1
         return min_lr, max_lr, min_wd, max_wd

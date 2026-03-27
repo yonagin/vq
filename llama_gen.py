@@ -2,6 +2,7 @@
 Samples Generation codes
 Reference with https://github.com/FoundationVision/LlamaGen/blob/main/autoregressive/models/generate.py
 """
+
 import argparse, os, sys, glob
 import torch
 import time
@@ -13,6 +14,7 @@ from einops import repeat
 import importlib
 from taming.modules.transformer.llama import sample
 import time
+
 try:
     import torch_npu
 except:
@@ -23,7 +25,8 @@ if hasattr(torch, "npu"):
 else:
     DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-rescale = lambda x: (x + 1.) / 2.
+rescale = lambda x: (x + 1.0) / 2.0
+
 
 def get_obj_from_str(string, reload=False):
     print(string)
@@ -33,43 +36,76 @@ def get_obj_from_str(string, reload=False):
         importlib.reload(module_imp)
     return getattr(importlib.import_module(module, package=None), cls)
 
+
 def instantiate_from_config(config):
     if not "class_path" in config:
         raise KeyError("Expected key `class_path` to instantiate.")
     return get_obj_from_str(config["class_path"])(**config.get("init_args", dict()))
 
+
 def chw_to_pillow(x):
-    return Image.fromarray((255*rescale(x.detach().cpu().numpy().transpose(1,2,0))).clip(0,255).astype(np.uint8))
+    return Image.fromarray(
+        (255 * rescale(x.detach().cpu().numpy().transpose(1, 2, 0)))
+        .clip(0, 255)
+        .astype(np.uint8)
+    )
 
 
 @torch.no_grad()
-def sample_classconditional(model, batch_size, class_label, steps=256, temperature=None, top_k=None, callback=None,
-                            dim_z=18, h=16, w=16, verbose_time=False, top_p=None, token_factorization=False, cfg_scale=1.0):
+def sample_classconditional(
+    model,
+    batch_size,
+    class_label,
+    steps=256,
+    temperature=None,
+    top_k=None,
+    callback=None,
+    dim_z=18,
+    h=16,
+    w=16,
+    verbose_time=False,
+    top_p=None,
+    token_factorization=False,
+    cfg_scale=1.0,
+):
     log = dict()
-    assert type(class_label) == int, f'expecting type int but type is {type(class_label)}'
-    assert not model.be_unconditional, 'Expecting a class-conditional Net2NetTransformer.'
-    c_indices = repeat(torch.tensor([class_label]), '1 -> b 1', b=batch_size).to(model.device)  # class token
+    assert type(class_label) == int, (
+        f"expecting type int but type is {type(class_label)}"
+    )
+    assert not model.be_unconditional, (
+        "Expecting a class-conditional Net2NetTransformer."
+    )
+    c_indices = repeat(torch.tensor([class_label]), "1 -> b 1", b=batch_size).to(
+        model.device
+    )  # class token
     if token_factorization:
         if cfg_scale[0] > 1.0:
             cond_null = torch.ones_like(c_indices) * model.transformer.config.class_num
-            cond_combined = torch.concat([c_indices, cond_null], dim=0) #(2B 1)
+            cond_combined = torch.concat([c_indices, cond_null], dim=0)  # (2B 1)
         else:
-            cond_combined = c_indices # B 1
+            cond_combined = c_indices  # B 1
     else:
         if cfg_scale > 1.0:
             cond_null = torch.ones_like(c_indices) * model.transformer.config.class_num
-            cond_combined = torch.concat([c_indices, cond_null], dim=0) #(2B 1)
+            cond_combined = torch.concat([c_indices, cond_null], dim=0)  # (2B 1)
         else:
-            cond_combined = c_indices # B 1
+            cond_combined = c_indices  # B 1
 
-    
     qzshape = [batch_size, dim_z, h, w]
-    
+
     t1 = time.time()
-    index_sample = sample(cond_combined, model.transformer, steps=steps,
-                            sample_logits=True, top_k=top_k, callback=callback,
-                            temperature=temperature, top_p=top_p, token_factorization=token_factorization,
-                            cfg_scale=cfg_scale)
+    index_sample = sample(
+        cond_combined,
+        model.transformer,
+        steps=steps,
+        sample_logits=True,
+        top_k=top_k,
+        callback=callback,
+        temperature=temperature,
+        top_p=top_p,
+        token_factorization=token_factorization,
+        cfg_scale=cfg_scale,
+    )
     if verbose_time:
         sampling_time = time.time() - t1
         print(f"Full sampling takes about {sampling_time:.2f} seconds.")
@@ -78,33 +114,100 @@ def sample_classconditional(model, batch_size, class_label, steps=256, temperatu
     log["class_label"] = c_indices
     return log
 
+
+def _infer_latent_size(first_stage_config):
+    params = first_stage_config.params
+    dd = params.ddconfig
+    z_channels = dd.z_channels
+    resolution = dd.resolution
+    downs = len(dd.ch_mult) - 1
+    spatial = resolution // (2**downs)
+    if spatial * spatial <= 0:
+        raise ValueError("Invalid latent spatial size inferred")
+    return z_channels, spatial
+
+
+def _compute_steps(block_size, cls_tokens, spatial_tokens):
+    if block_size != spatial_tokens:
+        raise ValueError(
+            "Transformer block_size must equal the latent spatial token count. "
+            f"Got block_size={block_size}, latent_tokens={spatial_tokens}, "
+            f"cls_token_num={cls_tokens}."
+        )
+    return spatial_tokens
+
+
 @torch.no_grad()
-def run(logdir, model, batch_size, temperature, top_k, unconditional=True, num_samples=50000,
-        given_classes=None, top_p=None, token_factorization=True, cfg_scale=1.0, dim_z=None):
-    batches = [batch_size for _ in range(num_samples//batch_size)] + [num_samples % batch_size]
+def run(
+    logdir,
+    model,
+    batch_size,
+    temperature,
+    top_k,
+    unconditional=True,
+    num_samples=50000,
+    given_classes=None,
+    top_p=None,
+    token_factorization=True,
+    cfg_scale=1.0,
+    latent_shape=None,
+    steps=None,
+):
+    batches = [batch_size for _ in range(num_samples // batch_size)] + [
+        num_samples % batch_size
+    ]
     if not unconditional:
         assert given_classes is not None
-        print("Running in pure class-conditional sampling mode. I will produce "
-              f"{num_samples} samples for each of the {len(given_classes)} classes, "
-              f"i.e. {num_samples*len(given_classes)} in total.")
+        print(
+            "Running in pure class-conditional sampling mode. I will produce "
+            f"{num_samples} samples for each of the {len(given_classes)} classes, "
+            f"i.e. {num_samples * len(given_classes)} in total."
+        )
         for class_label in tqdm(given_classes, desc="Classes"):
             for n, bs in tqdm(enumerate(batches), desc="Sampling Class"):
-                if bs == 0: break
-                logs = sample_classconditional(model, batch_size=bs, class_label=class_label,
-                                               temperature=temperature, top_k=top_k, top_p=top_p, token_factorization=token_factorization, cfg_scale=cfg_scale
-                                               ,dim_z=dim_z)
-                save_from_logs(logs, logdir, base_count=n * batch_size, cond_key=logs["class_label"])
+                if bs == 0:
+                    break
+                logs = sample_classconditional(
+                    model,
+                    batch_size=bs,
+                    class_label=class_label,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    token_factorization=token_factorization,
+                    cfg_scale=cfg_scale,
+                    dim_z=latent_shape[0],
+                    h=latent_shape[1],
+                    w=latent_shape[2],
+                )
+                save_from_logs(
+                    logs,
+                    logdir,
+                    base_count=n * batch_size,
+                    cond_key=logs["class_label"],
+                )
     else:
         print("Running in unconditional sampling mode.")
         for n, bs in tqdm(enumerate(batches), desc="Sampling"):
-            if bs == 0: break
-            qzshape = [bs, dim_z, 16, 16]
-            index_sample = sample(None, model.transformer, steps=256,
-                                    sample_logits=True, top_k=top_k, callback=None,
-                                    temperature=temperature, top_p=top_p, token_factorization=token_factorization,
-                                    cfg_scale=cfg_scale, num_samples=bs)
+            if bs == 0:
+                break
+            qzshape = [bs, *latent_shape]
+            index_sample = sample(
+                None,
+                model.transformer,
+                steps=steps,
+                sample_logits=True,
+                top_k=top_k,
+                callback=None,
+                temperature=temperature,
+                top_p=top_p,
+                token_factorization=token_factorization,
+                cfg_scale=cfg_scale,
+                num_samples=bs,
+            )
             x_sample = model.decode_to_img(index_sample, qzshape)
             save_from_logs({"samples": x_sample}, logdir, base_count=n * batch_size)
+
 
 def save_from_logs(logs, logdir, base_count, key="samples", cond_key=None):
     xx = logs[key]
@@ -115,9 +218,11 @@ def save_from_logs(logs, logdir, base_count, key="samples", cond_key=None):
             x.save(os.path.join(logdir, f"{count:06}.png"))
         else:
             condlabel = cond_key[i]
-            if type(condlabel) == torch.Tensor: condlabel = condlabel.item()
+            if type(condlabel) == torch.Tensor:
+                condlabel = condlabel.item()
             os.makedirs(os.path.join(logdir, str(condlabel)), exist_ok=True)
             x.save(os.path.join(logdir, str(condlabel), f"{count:06}.png"))
+
 
 def get_parser():
     def str2bool(v):
@@ -143,7 +248,7 @@ def get_parser():
         type=str,
         nargs="?",
         help="path where the samples will be logged to.",
-        default=""
+        default="",
     )
     parser.add_argument(
         "--config",
@@ -159,56 +264,48 @@ def get_parser():
         type=int,
         nargs="?",
         help="num_samples to draw",
-        default=50000
+        default=50000,
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        nargs="?",
-        help="the batch size",
-        default=25
+        "--batch_size", type=int, nargs="?", help="the batch size", default=25
     )
     parser.add_argument(
         "-k",
         "--top_k",
-        type=str,
-        nargs="?",
-        help="top-k value to sample with",
-        default="0",
+        type=float,
+        nargs="*",
+        help="top-k value(s) to sample with",
+        default=[0],
     )
     parser.add_argument(
         "-t",
         "--temperature",
-        type=str,
-        nargs="?",
-        help="temperature value to sample with",
-        default="1.0"
+        type=float,
+        nargs="*",
+        help="temperature value(s) to sample with",
+        default=[1.0],
     )
     parser.add_argument(
         "-p",
         "--top_p",
-        type=str,
-        nargs="?",
-        help="top-p value to sample with",
-        default="1.0"
+        type=float,
+        nargs="*",
+        help="top-p value(s) to sample with",
+        default=[1.0],
     )
     parser.add_argument(
         "--classes",
         type=str,
         nargs="?",
         help="specify comma-separated classes to sample from. Uses 1000 classes per default.",
-        default="imagenet"
+        default="imagenet",
     )
     parser.add_argument(
         "--token_factorization",
         action="store_true",
-        help="whether to use token factorization"
+        help="whether to use token factorization",
     )
-    parser.add_argument(
-        "--cfg_scale",
-        type=str,
-        default="1.0"
-    )
+    parser.add_argument("--cfg_scale", type=float, nargs="*", default=[1.0])
     return parser
 
 
@@ -233,7 +330,9 @@ def load_model(config, ckpt, gpu, eval_mode):
     else:
         pl_sd = {"state_dict": None}
         global_step = None
-    model = load_model_from_config(config.model, pl_sd["state_dict"], gpu=gpu, eval_mode=eval_mode)["model"]
+    model = load_model_from_config(
+        config.model, pl_sd["state_dict"], gpu=gpu, eval_mode=eval_mode
+    )["model"]
     return model, global_step
 
 
@@ -246,23 +345,34 @@ if __name__ == "__main__":
     ckpt = opt.ckpt
     ckpt_name = ckpt.split("/")[-1]
     # config = OmegaConf.load(os.path.join(logdir, "config.yaml"))
-    config = OmegaConf.load(opt.config[0]) #since only one config
+    config = OmegaConf.load(opt.config[0])  # since only one config
 
     model, global_step = load_model(config, ckpt, gpu=True, eval_mode=True)
 
     ## handle topk topp tempeature and cfg_scale
-    if opt.token_factorization:
-        opt.top_k = [int(topk) for topk in opt.top_k.split(",")]
-        opt.top_p = [float(topp) for topp in opt.top_p.split(",")]
-        opt.temperature = [float(temp) for temp in opt.temperature.split(",")]
-        opt.cfg_scale = [float(cfg_scal) for cfg_scal in opt.cfg_scale.split(",")]
-    else:
-        opt.top_k = [int(topk) for topk in opt.top_k.split(",")][0]
-        opt.top_p = [float(topp) for topp in opt.top_p.split(",")][0]
-        opt.temperature = [float(temp) for temp in opt.temperature.split(",")][0]
-        opt.cfg_scale = [float(cfg_scal) for cfg_scal in opt.cfg_scale.split(",")][0]
+    def _ensure_scalar(values, name):
+        if len(values) == 1:
+            return values[0]
+        if len(values) == 2 and opt.token_factorization:
+            return values
+        raise ValueError(
+            f"{name} expects 1 value (normal) or 2 (token factorization). Got: {values}"
+        )
 
-    dim_z = config.model.init_args.first_stage_config.params.quantconfig.params.e_dim
+    opt.top_k = _ensure_scalar(opt.top_k, "top_k")
+    opt.top_p = _ensure_scalar(opt.top_p, "top_p")
+    opt.temperature = _ensure_scalar(opt.temperature, "temperature")
+    opt.cfg_scale = _ensure_scalar(opt.cfg_scale, "cfg_scale")
+
+    z_channels, latent_hw = _infer_latent_size(
+        config.model.init_args.first_stage_config
+    )
+    spatial_tokens = latent_hw * latent_hw
+    steps = _compute_steps(
+        config.model.init_args.transformer_config.params.block_size,
+        config.model.init_args.transformer_config.params.cls_token_num,
+        spatial_tokens,
+    )
 
     if opt.classes == "imagenet":
         given_classes = [i for i in range(1000)]
@@ -273,21 +383,44 @@ if __name__ == "__main__":
 
     ### The ckpt should be only a name and the logdir is the version dir
     if opt.token_factorization:
-        logdir = os.path.join(logdir, "samples", f"top_k_{opt.top_k[0]}_{opt.top_k[1]}_temp_{opt.temperature[0]:.2f}_{opt.temperature[1]:.2f}_top_p_{opt.top_p[0]}_{opt.top_p[1]}_cfg_{opt.cfg_scale[0]}_{opt.cfg_scale[1]}",
-                            f"{ckpt_name}")
+        logdir = os.path.join(
+            logdir,
+            "samples",
+            f"top_k_{opt.top_k[0]}_{opt.top_k[1]}_temp_{opt.temperature[0]:.2f}_{opt.temperature[1]:.2f}_top_p_{opt.top_p[0]}_{opt.top_p[1]}_cfg_{opt.cfg_scale[0]}_{opt.cfg_scale[1]}",
+            f"{ckpt_name}",
+        )
     else:
-        logdir = os.path.join(logdir, "samples",
-                        f"top_k_{opt.top_k}_temp_{opt.temperature:.2f}_top_p_{opt.top_p}_cfg_{opt.cfg_scale}",
-                        f"{ckpt_name}")
+        logdir = os.path.join(
+            logdir,
+            "samples",
+            f"top_k_{opt.top_k}_temp_{opt.temperature:.2f}_top_p_{opt.top_p}_cfg_{opt.cfg_scale}",
+            f"{ckpt_name}",
+        )
 
     print(f"Logging to {logdir}")
     os.makedirs(logdir, exist_ok=True)
     start_time = time.time()
-    run(logdir, model, opt.batch_size, opt.temperature, opt.top_k, unconditional=model.be_unconditional,
-        given_classes=given_classes, num_samples=opt.num_samples, top_p=opt.top_p, token_factorization=opt.token_factorization
-        , cfg_scale=opt.cfg_scale, dim_z=dim_z)
+    run(
+        logdir,
+        model,
+        opt.batch_size,
+        opt.temperature,
+        opt.top_k,
+        unconditional=model.be_unconditional,
+        given_classes=given_classes,
+        num_samples=opt.num_samples,
+        top_p=opt.top_p,
+        token_factorization=opt.token_factorization,
+        cfg_scale=opt.cfg_scale,
+        latent_shape=(
+            z_channels,
+            latent_hw,
+            latent_hw,
+        ),
+        steps=steps,
+    )
 
     end_time = time.time()
-    print(end_time - start_time, 's')
+    print(end_time - start_time, "s")
 
     print("done.")
