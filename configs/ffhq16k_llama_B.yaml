@@ -83,7 +83,10 @@ model:
             use_ema_scale: true
         lossconfig:
           target: taming.modules.losses.DummyLoss
-    cond_stage_config: ~
+    cond_stage_config:
+      target: taming.modules.util.Labelator
+      params:
+        n_classes: 0
 
 data:
   class_path: main.DataModuleFromConfig
