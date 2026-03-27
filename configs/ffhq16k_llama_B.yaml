@@ -6,14 +6,14 @@ trainer:
   devices: 2
   num_nodes: 1
   precision: 16-mixed
-  max_epochs: 100
+  max_epochs: 80
   check_val_every_n_epoch: 5
   num_sanity_val_steps: 0
   gradient_clip_val: 1.0
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/vq/llama_log/ffhq_256"
+        dirpath: "/vq/llama_log/emas"
         save_top_k: 5
         monitor: "train/loss"
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -22,14 +22,14 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/vq/llama_log/ffhq_256"
+      save_dir: "/vq/llama_log/emas"
       version: "n16384"
       name:
 
 model:
   class_path: taming.models.cond_transformer.Net2NetTransformer
   init_args:
-    learning_rate: 5e-4
+    learning_rate: 2e-4
     first_stage_key: image
     cond_stage_key: class_label
     weight_decay: 5e-2
@@ -43,8 +43,8 @@ model:
       target: taming.modules.transformer.llama.GPT
       params:
         vocab_size: 16384 
-        block_size: 256
-        n_layer: 16
+        block_size: 512
+        n_layer: 24
         n_head: 16
         n_embd: 1024
         cond_dim: 1024
@@ -58,7 +58,7 @@ model:
     first_stage_config:
       target: taming.models.vq.VQModel
       params:
-        ckpt_path: "/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt" #specify your path for tokenizer 
+        ckpt_path: "/vq/vq_log/ffhq_256/epoch=84-step=79730.ckpt" #specify your path for tokenizer 
         use_ema: True
         model_type: "full"
         stage: transformer
@@ -74,7 +74,7 @@ model:
           attn_resolutions: [16]
           dropout: 0.0
         quantconfig:
-          target: taming.modules.vqvae.quantize.VectorQuantizer
+          target: taming.modules.vqvae.quantize.ASVQ
           params:
             n_e: 16384
             e_dim: 32
@@ -93,18 +93,15 @@ data:
       target: taming.data.faceshq.FFHQTrain
       params:
         size: 256
-        list_file: "/root/lsw/data/ffhqtrain.txt" # Please specify your own path 
 
     validation:
       target: taming.data.faceshq.FFHQValidation
       params:
         size: 256
-        list_file: "/root/lsw/data/ffhqval.txt" # Please specify your own path 
 
     test:
       target: taming.data.faceshq.FFHQValidation
       params:
         size: 256
-        list_file: "/root/lsw/data/ffhqval.txt" # Please specify your own path 
 
 ckpt_path: null # to resume
