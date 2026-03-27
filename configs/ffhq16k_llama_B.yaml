@@ -79,7 +79,8 @@ model:
             n_e: 16384
             e_dim: 32
             beta: 0.33
-            legacy: false
+            fixed_cb: false
+            use_ema_scale: true
         lossconfig:
           target: taming.modules.losses.DummyLoss
     cond_stage_config: ~
