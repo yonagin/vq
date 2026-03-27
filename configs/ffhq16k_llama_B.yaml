@@ -82,7 +82,7 @@ model:
             legacy: false
         lossconfig:
           target: taming.modules.losses.DummyLoss
-    cond_stage_config: null
+    cond_stage_config: ~
 
 data:
   class_path: main.DataModuleFromConfig
