@@ -581,7 +581,7 @@ class ASVQ(nn.Module):
             indices = indices.reshape(-1) # flatten again
 
         # get quantized latent vectors
-        quant_codebook = self.scale * self.base
+        quant_codebook = self.scale * self.get_norm_cb()
         z_q = F.embedding(indices, quant_codebook)
 
         if shape is not None:
