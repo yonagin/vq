@@ -199,5 +199,28 @@ class DDIMSampler(object):
         noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
+
+        print("index:", index, type(index))
+
+        print("type(alphas):", type(alphas))
+        print("type(alphas_prev):", type(alphas_prev))
+        print("type(sigmas):", type(sigmas))
+        print("type(sqrt_one_minus_alphas):", type(sqrt_one_minus_alphas))
+
+        print("alphas[index]:", type(alphas[index]), alphas[index])
+        print("alphas_prev[index]:", type(alphas_prev[index]), alphas_prev[index])
+        print("sigmas[index]:", type(sigmas[index]), sigmas[index])
+        print("sqrt_one_minus_alphas[index]:", type(sqrt_one_minus_alphas[index]), sqrt_one_minus_alphas[index])
+
+        print("a_t:", type(a_t), getattr(a_t, "dtype", None), getattr(a_t, "shape", None), getattr(a_t, "device", None))
+        print("a_prev:", type(a_prev), getattr(a_prev, "dtype", None), getattr(a_prev, "shape", None), getattr(a_prev, "device", None))
+        print("sigma_t:", type(sigma_t), getattr(sigma_t, "dtype", None), getattr(sigma_t, "shape", None), getattr(sigma_t, "device", None))
+        print("sqrt_one_minus_at:", type(sqrt_one_minus_at), getattr(sqrt_one_minus_at, "dtype", None), getattr(sqrt_one_minus_at, "shape", None), getattr(sqrt_one_minus_at, "device", None))
+
+        print("x:", type(x), x.dtype, x.shape, x.device)
+        print("e_t:", type(e_t), getattr(e_t, "dtype", None), getattr(e_t, "shape", None), getattr(e_t, "device", None))
+        print("pred_x0:", type(pred_x0), getattr(pred_x0, "dtype", None), getattr(pred_x0, "shape", None), getattr(pred_x0, "device", None))
+        print("dir_xt:", type(dir_xt), getattr(dir_xt, "dtype", None), getattr(dir_xt, "shape", None), getattr(dir_xt, "device", None))
+        print("noise:", type(noise), getattr(noise, "dtype", None), getattr(noise, "shape", None), getattr(noise, "device", None))    
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
         return x_prev, pred_x0
