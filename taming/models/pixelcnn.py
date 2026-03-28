@@ -1,5 +1,3 @@
-import math
-
 import lightning as L
 import torch
 import torch.nn.functional as F
@@ -36,7 +34,6 @@ class PixelCNNLightningModule(L.LightningModule):
         self.first_stage_model = self.instantiate_first_stage(first_stage_config)
         vocab_size = self._infer_vocab_size()
         self.quant_dim = self._infer_quant_dim()
-        self.latent_shape: tuple[int, ...] | None = None
         self.net = GatedPixelCNN(
             input_dim=vocab_size, dim=dim, n_layers=n_layers, n_classes=n_classes
         )
@@ -72,7 +69,6 @@ class PixelCNNLightningModule(L.LightningModule):
         raise AttributeError("Unable to infer latent dimension from quantizer")
 
     def forward(self, tokens: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        tokens = self._tokens_to_grid(tokens)
         return self.net(tokens, labels)
 
     def get_input(self, batch, key):
@@ -88,13 +84,8 @@ class PixelCNNLightningModule(L.LightningModule):
     @torch.no_grad()
     def encode_tokens(self, x: torch.Tensor) -> torch.Tensor:
         quant_z, _, indices, _ = self.first_stage_model.encode(x)
-        self._set_latent_shape(quant_z)
-        if isinstance(indices, (tuple, list)):
-            indices = indices[0]
-        if indices.dim() == 2:
-            indices = indices.view(quant_z.shape[0], quant_z.shape[2], quant_z.shape[3])
-        tokens = indices.long()
-        return self._tokens_to_grid(tokens)
+        indices = indices.view(-1, quant_z.shape[-2], quant_z.shape[-1])
+        return indices.long()
 
     def prepare_labels(
         self, batch, batch_size: int, device: torch.device
@@ -111,9 +102,8 @@ class PixelCNNLightningModule(L.LightningModule):
         with torch.no_grad():
             tokens = self.encode_tokens(x)
         labels = self.prepare_labels(batch, tokens.shape[0], tokens.device)
-        grid_tokens = self._tokens_to_grid(tokens)
-        logits = self(grid_tokens, labels)
-        loss = F.cross_entropy(logits, grid_tokens)
+        logits = self(tokens, labels)
+        loss = F.cross_entropy(logits, tokens)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -136,7 +126,6 @@ class PixelCNNLightningModule(L.LightningModule):
 
     @torch.no_grad()
     def tokens_to_quant(self, tokens: torch.Tensor) -> torch.Tensor:
-        tokens = self._tokens_to_grid(tokens)
         b, h, w = tokens.shape
         shape = (b, h, w, self.quant_dim)
         quant = self.first_stage_model.quantize.get_codebook_entry(
@@ -156,39 +145,3 @@ class PixelCNNLightningModule(L.LightningModule):
             tokens = self.encode_tokens(x)
             recon = self.decode_tokens(tokens)
         return {"inputs": x.clamp(-1, 1), "reconstructions": recon}
-
-    def _set_latent_shape(self, quant_z: torch.Tensor) -> None:
-        if quant_z.dim() <= 2:
-            self.latent_shape = ()
-        else:
-            self.latent_shape = tuple(int(d) for d in quant_z.shape[2:])
-
-    def _tokens_to_grid(self, tokens: torch.Tensor) -> torch.Tensor:
-        if tokens.dim() == 3:
-            return tokens
-        if tokens.dim() != 2:
-            raise ValueError(
-                f"Expected tokens with 2 or 3 dimensions, got shape {tokens.shape}"
-            )
-
-        if self.latent_shape is None:
-            raise RuntimeError(
-                "Latent shape is unknown. Encode at least one batch or set input_dim explicitly."
-            )
-
-        if len(self.latent_shape) == 0:
-            height = tokens.shape[1]
-            width = 1
-        elif len(self.latent_shape) == 1:
-            height = self.latent_shape[0]
-            width = 1
-        else:
-            height = self.latent_shape[0]
-            width = int(math.prod(self.latent_shape[1:]))
-
-        expected = height * width
-        if tokens.shape[1] != expected:
-            raise ValueError(
-                f"Token sequence length {tokens.shape[1]} does not match latent grid {height}x{width}"
-            )
-        return tokens.view(tokens.shape[0], height, width)
