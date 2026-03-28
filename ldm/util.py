@@ -70,7 +70,7 @@ def mean_flat(tensor):
     return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
-def count_params(model, verbose=False):
+def count_params(model, verbose=True):
     total_params = sum(p.numel() for p in model.parameters())
     if verbose:
         print(f"{model.__class__.__name__} has {total_params * 1.0e-6:.2f} M params.")
