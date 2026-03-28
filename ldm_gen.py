@@ -261,7 +261,6 @@ def main() -> None:
         torch.cuda.manual_seed_all(args.seed)
 
     model = load_model(args.config, args.ckpt, DEVICE)
-    model.device = DEVICE  # ensure helper accesses the correct device
 
     sampler = DDIMSampler(model) if args.sampler == "ddim" else PLMSSampler(model)
     shape = (model.channels, model.image_size, model.image_size)
