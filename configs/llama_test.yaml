@@ -78,7 +78,6 @@ model:
             n_e: 16384
             e_dim: 32
             beta: 0.33
-            legacy: false
         lossconfig:
           target: taming.modules.losses.DummyLoss
     cond_stage_config: ~
@@ -91,19 +90,13 @@ data:
       target: taming.data.faceshq.FFHQTrain
       params:
         size: 256
-        root: "/mnt/vq/data/ffhq"
-        list_file: "/mnt/vq/data/train.txt"
     validation:
       target: taming.data.faceshq.FFHQValidation
       params:
         size: 256
-        root: "/mnt/vq/data/ffhq"
-        list_file: "/mnt/vq/data/val.txt"
     test:
       target: taming.data.faceshq.FFHQValidation
       params:
         size: 256
-        root: "/mnt/vq/data/ffhq"
-        list_file: "/mnt/vq/data/val.txt"
 
 ckpt_path: null # to resume

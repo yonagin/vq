@@ -272,7 +272,7 @@ def get_parser():
     parser.add_argument(
         "-k",
         "--top_k",
-        type=float,
+        type=int,
         nargs="*",
         help="top-k value(s) to sample with",
         default=[0],

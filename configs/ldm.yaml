@@ -5,14 +5,14 @@ trainer:
   devices: 1
   num_nodes: 1
   precision: 16-mixed
-  max_epochs: 250
+  max_epochs: 100
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 0
   log_every_n_steps: 100
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/ldm_log/ffhq_256" # Please specify your own path
+        dirpath: "/vq/ldm_log/emas" # Please specify your own path
         save_top_k: 5 
         monitor: val/loss_simple_ema
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -20,13 +20,13 @@ trainer:
         logging_interval: step
     - class_path: main.ImageLogger
       init_args:
-        batch_frequency: 4700
+        batch_frequency: 10000000
         max_images: 8
         increase_log_steps: false
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-        save_dir: "/mnt/vq/ldm_log/ffhq_256" #Please specify your own path
+        save_dir: "/vq/ldm_log/emas" #Please specify your own path
         version: 'test'
         name:
 
@@ -57,6 +57,7 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
+        ckpt_path: "/vq/vq_log/ffhq_256/epoch=84-step=79730.ckpt" #specify your path for tokenizer 
         use_ema: true
         model_type: "full"
         ddconfig:
@@ -76,10 +77,8 @@ model:
             n_e: 16384
             e_dim: 32
             beta: 0.33
-            legacy: false
         lossconfig:
           target: torch.nn.Identity
-        ckpt_path: "/mnt/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt"
     cond_stage_config: '__is_unconditional__'
 
 data:
