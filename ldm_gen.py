@@ -193,9 +193,9 @@ def parse_args() -> argparse.Namespace:
         "--sampler", choices=["ddim", "plms"], default="ddim", help="Sampling algorithm"
     )
     parser.add_argument(
-        "--steps", type=int, default=200, help="Number of diffusion steps"
+        "--steps", type=int, default=50, help="Number of diffusion steps"
     )
-    parser.add_argument("--eta", type=float, default=0.0, help="DDIM eta (noise scale)")
+    parser.add_argument("--eta", type=float, default=1.0, help="DDIM eta (noise scale)")
     parser.add_argument(
         "--temperature", type=float, default=1.0, help="Sampling temperature for noise"
     )
