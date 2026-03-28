@@ -57,7 +57,7 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
-        ckpt_path: "/vq/vq_log/ffhq_256/epoch=84-step=79730.ckpt" #specify your path for tokenizer 
+        ckpt_path: "/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt" #specify your path for tokenizer 
         use_ema: true
         model_type: "full"
         ddconfig:
@@ -72,7 +72,7 @@ model:
           attn_resolutions: [16]
           dropout: 0.0
         quantconfig:
-          target: taming.modules.vqvae.quantize.ASVQ
+          target: taming.modules.vqvae.quantize.VQ
           params:
             n_e: 16384
             e_dim: 32
