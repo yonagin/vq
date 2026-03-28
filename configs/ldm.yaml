@@ -90,18 +90,12 @@ data:
       target: taming.data.faceshq.FFHQTrain
       params:
         size: 256
-        root: "/mnt/vq/data/ffhq" # Please specify your own path
-        list_file: "/mnt/vq/data/train.txt" # Please specify your own path
     validation:
       target: taming.data.faceshq.FFHQValidation
       params:
           size: 256
-          root: "/mnt/vq/data/ffhq" # Please specify your own path
-          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
     test:
       target: taming.data.faceshq.FFHQValidation
       params:
           size: 256
-          root: "/mnt/vq/data/ffhq" # Please specify your own path
-          list_file: "/mnt/vq/data/val.txt" # Please specify your own path 
 ckpt_path: null # to resume
