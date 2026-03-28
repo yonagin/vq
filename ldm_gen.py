@@ -303,7 +303,7 @@ def main() -> None:
                 )
 
             samples, _ = sampler.sample(
-                S=int(args.steps),
+                S=args.steps,
                 batch_size=bs,
                 shape=shape,
                 conditioning=cond,
