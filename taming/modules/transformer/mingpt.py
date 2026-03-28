@@ -270,7 +270,6 @@ class GPT(nn.Module):
 
     def forward(self, idx, input_pos=None, mask=None, targets=None):
         """
-        与版本B的 forward 接口对齐:
         - idx: tuple (token_indices, class_labels)
               token_indices: [B, T] token索引
               class_labels:  [B] 或 [B, 1] 类别标签
@@ -309,12 +308,6 @@ class GPT(nn.Module):
         return logits, loss
 
     def decode_tokens(self, idx, input_pos=None, targets=None, first_step=False):
-        """
-        与版本B的 decode_tokens 接口对齐 (推理专用)。
-
-        - first_step=True:  idx 是类别标签，做 prefill
-        - first_step=False: idx 是 (token_indices, class_labels) 元组
-        """
         assert not self.training
 
         if first_step:
@@ -351,9 +344,6 @@ class GPT(nn.Module):
     def forward_with_past(
         self, idx, embeddings=None, targets=None, past=None, past_length=None
     ):
-        """
-        保留原版本A的推理接口 (向后兼容)。
-        """
         assert not self.training
         token_embeddings = self.tok_emb(idx)
         if embeddings is not None:
