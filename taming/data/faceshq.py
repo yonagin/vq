@@ -54,9 +54,15 @@ class CelebAHQValidation(FacesBase):
 
 class FFHQTrain(FacesBase):
     def __init__(
-        self, size, keys=None, root="/vq/data/ffhq", list_file="/vq/data/train.txt"
+        self,
+        size,
+        keys=None,
+        root="/vq/data/ffhq",
+        list_file="/vq/data/train.txt",
+        coord=False,
     ):
         super().__init__()
+        self.coord = coord
         with open(list_file, "r") as f:
             relpaths = f.read().splitlines()
 
@@ -64,13 +70,35 @@ class FFHQTrain(FacesBase):
         paths = [os.path.join(root, relpath) for relpath in relpaths]
         self.data = ImagePaths(paths=paths, size=size, random_crop=False)
         self.keys = keys
+
+    def __getitem__(self, i):
+        if not getattr(self, "coord", False):
+            return super().__getitem__(i)
+
+        example = dict(self.data[i])
+        image = example["image"]
+        h, w, _ = image.shape
+        coord = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
+
+        if self.keys is not None:
+            ex = {k: example[k] for k in self.keys if k in example}
+        else:
+            ex = {"image": image}
+        ex["coord"] = coord
+        return ex
 
 
 class FFHQValidation(FacesBase):
     def __init__(
-        self, size, keys=None, root="/vq/data/ffhq", list_file="/vq/data/val.txt"
+        self,
+        size,
+        keys=None,
+        root="/vq/data/ffhq",
+        list_file="/vq/data/val.txt",
+        coord=False,
     ):
         super().__init__()
+        self.coord = coord
         with open(list_file, "r") as f:
             relpaths = f.read().splitlines()
 
@@ -78,13 +106,29 @@ class FFHQValidation(FacesBase):
         paths = [os.path.join(root, relpath) for relpath in relpaths]
         self.data = ImagePaths(paths=paths, size=size, random_crop=False)
         self.keys = keys
+
+    def __getitem__(self, i):
+        if not getattr(self, "coord", False):
+            return super().__getitem__(i)
+
+        example = dict(self.data[i])
+        image = example["image"]
+        h, w, _ = image.shape
+        coord = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
+
+        if self.keys is not None:
+            ex = {k: example[k] for k in self.keys if k in example}
+        else:
+            ex = {"image": image}
+        ex["coord"] = coord
+        return ex
 
 
 class FacesHQTrain(Dataset):
     # CelebAHQ [0] + FFHQ [1]
     def __init__(self, size, keys=None, crop_size=None, coord=False):
         d1 = CelebAHQTrain(size=size, keys=keys)
-        d2 = FFHQTrain(size=size, keys=keys)
+        d2 = FFHQTrain(size=size, keys=keys, coord=coord)
         self.data = ConcatDatasetWithIndex([d1, d2])
         self.coord = coord
         if crop_size is not None:
@@ -117,7 +161,7 @@ class FacesHQValidation(Dataset):
     # CelebAHQ [0] + FFHQ [1]
     def __init__(self, size, keys=None, crop_size=None, coord=False):
         d1 = CelebAHQValidation(size=size, keys=keys)
-        d2 = FFHQValidation(size=size, keys=keys)
+        d2 = FFHQValidation(size=size, keys=keys, coord=coord)
         self.data = ConcatDatasetWithIndex([d1, d2])
         self.coord = coord
         if crop_size is not None:

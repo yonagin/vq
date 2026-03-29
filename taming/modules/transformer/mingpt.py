@@ -151,23 +151,6 @@ class Block(nn.Module):
         return x
 
 
-class LabelEmbedder(nn.Module):
-    """
-    Embeds class labels into vector representations. Adapts to unconditional runs.
-    """
-
-    def __init__(self, num_classes, hidden_size, dropout_prob=0.0):
-        super().__init__()
-        self.base_num_classes = max(num_classes, 0)
-        table_classes = self.base_num_classes if self.base_num_classes > 0 else 1
-        self.embedding_table = nn.Embedding(table_classes, hidden_size)
-
-    def forward(self, labels, train=False, force_drop_ids=None):
-        labels = labels.squeeze(-1)
-        embeddings = self.embedding_table(labels).unsqueeze(1)
-        return embeddings
-
-
 class GPT(nn.Module):
     """the full GPT language model, with a context size of block_size"""
 
@@ -178,36 +161,12 @@ class GPT(nn.Module):
         n_layer=12,
         n_head=8,
         n_embd=256,
-        cond_dim=256,
         embd_pdrop=0.0,
-        resid_dropout_p=0.0,
-        attn_dropout_p=0.0,
-        ffn_dropout_p=0.1,
-        drop_path_rate=0.0,
+        resid_pdrop=0.0,
+        attn_pdrop=0.0,
         n_unmasked=0,
-        max_batch_size=32,
-        max_seq_len=2048,
-        class_num=1000,
-        token_drop=0.1,
-        cls_token_num=1,
-        rope_base=10000,
-        norm_eps=1e-5,
-        ffn_dim_multiplier=None,
-        initalizer_range=0.02,
-        multiple_of=256,
-        n_kv_head=None,
-        shared_aln=False,
-        alng=1e-3,
-        use_pretrained_codebook=False,
-        codebook_ckpt_path=None,
-        n_codebook_embd=256,
     ):
         super().__init__()
-
-        # ---- 将版本B的参数映射到版本A的内部参数 ----
-        resid_pdrop = resid_dropout_p
-        attn_pdrop = attn_dropout_p
-
         config = GPTConfig(
             vocab_size=vocab_size,
             block_size=block_size,
@@ -220,22 +179,12 @@ class GPT(nn.Module):
             n_unmasked=n_unmasked,
         )
 
-        # --- 保存版本B需要的额外参数到config ---
-        self.cls_token_num = cls_token_num
-        self.class_num = class_num
-        self.use_pretrained_codebook = use_pretrained_codebook
-
         # input embedding stem
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embd)
         self.pos_emb = nn.Parameter(
-            torch.zeros(1, config.block_size + cls_token_num, config.n_embd)
+            torch.zeros(1, config.block_size, config.n_embd)
         )
         self.drop = nn.Dropout(config.embd_pdrop)
-
-        # class embedding (对齐版本B接口)
-        self.class_emb = LabelEmbedder(class_num, config.n_embd)
-
-        self.token_drop = nn.Dropout(token_drop)
 
         # transformer
         self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
@@ -262,38 +211,40 @@ class GPT(nn.Module):
             module.weight.data.fill_(1.0)
 
     def setup_caches(self, max_batch_size, max_seq_length, dtype):
-        """
-        与版本B接口对齐。版本A使用 forward_with_past 管理缓存，
-        这里仅做占位，不做实际操作。
-        """
-        pass
+        head_dim = self.config.n_embd // self.config.n_head
+        max_seq_length = int(max_seq_length)
+        self.max_seq_length = max_seq_length
+        self.max_batch_size = int(max_batch_size)
+        device = self.head.weight.device
+        dtype = dtype or self.head.weight.dtype
 
-    def forward(self, idx, input_pos=None, mask=None, targets=None):
-        """
-        - idx: tuple (token_indices, class_labels)
-              token_indices: [B, T] token索引
-              class_labels:  [B] 或 [B, 1] 类别标签
-        - input_pos: 未使用 (版本A使用绝对位置编码)
-        - mask: 未使用 (版本A内部使用causal mask)
-        - targets: [B, T] 可选的训练目标
-        """
-        idx, idx_cls = idx[0], idx[1]
+        self.cache = torch.zeros(
+            self.config.n_layer,
+            2,
+            self.max_batch_size,
+            self.config.n_head,
+            max_seq_length,
+            head_dim,
+            dtype=dtype,
+            device=device,
+        )
+        self.cache_lengths = torch.zeros(
+            (self.max_batch_size,), dtype=torch.long, device=device
+        )
 
-        # token embeddings
+    def forward(self, idx, embeddings=None, targets=None):
+        """
+        - idx: [B, T] token indices
+        - embeddings: [B, S, n_embd] optional prepended embeddings (e.g. conditioning)
+        - targets: [B, T] optional training targets
+        """
         token_embeddings = self.tok_emb(idx)
 
-        # class token embeddings (对齐版本B的cls prepend)
-        cls_token_embeddings = self.class_emb(idx_cls, train=self.training)[
-            :, : self.cls_token_num
-        ]
-
-        # 将cls token拼接在token前面
-        token_embeddings = torch.cat([cls_token_embeddings, token_embeddings], dim=1)
+        if embeddings is not None:
+            token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
 
         t = token_embeddings.shape[1]
-        assert t <= self.block_size + self.cls_token_num, (
-            "Cannot forward, model block size is exhausted."
-        )
+        assert t <= self.block_size, "Cannot forward, model block size is exhausted."
         position_embeddings = self.pos_emb[:, :t, :]
         x = self.drop(token_embeddings + position_embeddings)
         x = self.blocks(x)
@@ -303,87 +254,73 @@ class GPT(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+            )
 
         return logits, loss
 
-    def decode_tokens(self, idx, input_pos=None, targets=None, first_step=False):
+    def decode_tokens(self, idx, embeddings=None, targets=None, first_step=False):
+        """
+        Autoregressive decoding with KV-cache.
+        - idx: [B, T] token indices
+        - embeddings: [B, S, n_embd] optional prepended embeddings (only used at first_step)
+        - first_step: if True, reset cache and optionally prepend embeddings
+        """
         assert not self.training
 
-        if first_step:
-            # prefill: idx 是类别标签
-            cls_token_embeddings = self.class_emb(idx, train=False)
-            token_embeddings = cls_token_embeddings
-        else:
-            idx_tok, idx_cls = idx[0], idx[1]
-            token_embeddings = self.tok_emb(idx_tok)
-            # cls embedding 此处不再拼接 (已在prefill中处理)
+        if not hasattr(self, "cache"):
+            raise RuntimeError("Call setup_caches before decode_tokens.")
 
-        t = token_embeddings.shape[1]
-
-        # 使用input_pos来获取位置编码
-        if input_pos is not None:
-            position_embeddings = self.pos_emb[:, input_pos, :]
-        else:
-            position_embeddings = self.pos_emb[:, :t, :]
-
-        x = self.drop(token_embeddings + position_embeddings)
-
-        # 无KV cache，直接全量前向 (简化版推理)
-        # 注意：这里效率较低，但接口与版本B一致
-        x = self.blocks(x)
-        x = self.ln_f(x)
-        logits = self.head(x)
-
-        loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-
-        return logits, loss
-
-    def forward_with_past(
-        self, idx, embeddings=None, targets=None, past=None, past_length=None
-    ):
-        assert not self.training
         token_embeddings = self.tok_emb(idx)
-        if embeddings is not None:
+
+        if first_step and embeddings is not None:
             token_embeddings = torch.cat((embeddings, token_embeddings), dim=1)
 
-        if past is not None:
-            assert past_length is not None
-            past = torch.cat(past, dim=-2)
-            past_shape = list(past.shape)
-            expected_shape = [
-                self.config.n_layer,
-                2,
-                idx.shape[0],
-                self.config.n_head,
-                past_length,
-                self.config.n_embd // self.config.n_head,
-            ]
-            assert past_shape == expected_shape, f"{past_shape} =/= {expected_shape}"
-            position_embeddings = self.pos_emb[:, past_length, :]
+        batch_size = token_embeddings.shape[0]
+        t = token_embeddings.shape[1]
+
+        if first_step:
+            self.cache[:, :, :batch_size].zero_()
+            self.cache_lengths[:batch_size] = 0
+            past_len = 0
         else:
-            position_embeddings = self.pos_emb[:, : token_embeddings.shape[1], :]
+            past_len = int(self.cache_lengths[:batch_size].max().item())
+
+        if past_len + t > self.pos_emb.shape[1]:
+            raise RuntimeError("Requested decode length exceeds positional embeddings.")
+
+        position_embeddings = self.pos_emb[:, past_len : past_len + t, :]
 
         x = self.drop(token_embeddings + position_embeddings)
-        presents = []
-        for i, block in enumerate(self.blocks):
-            x, present = block(
-                x,
-                layer_past=past[i, ...] if past is not None else None,
-                return_present=True,
+
+        for layer_idx, block in enumerate(self.blocks):
+            if past_len == 0:
+                x, present = block(x, return_present=True)
+            else:
+                past = (
+                    self.cache[layer_idx, 0, :batch_size, :, :past_len, :],
+                    self.cache[layer_idx, 1, :batch_size, :, :past_len, :],
+                )
+                x, present = block(x, layer_past=past, return_present=True)
+            self.cache[layer_idx, :, :batch_size, :, past_len : past_len + t, :].copy_(
+                present
             )
-            presents.append(present)
+
+        self.cache_lengths[:batch_size] = past_len + t
 
         x = self.ln_f(x)
         logits = self.head(x)
+
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+            )
 
-        return logits, loss, torch.stack(presents)
-
+        return logits, loss
 
 class DummyGPT(nn.Module):
     # for debugging
@@ -467,54 +404,46 @@ class CodeGPT(nn.Module):
 
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            logits_for_loss = logits[:, self.cls_token_num :, :]
+            loss = F.cross_entropy(
+                logits_for_loss.reshape(-1, logits_for_loss.size(-1)),
+                targets.view(-1),
+            )
 
         return logits, loss
 
 
-#### sampling utils (对齐版本B接口)
-
-
 @torch.no_grad()
 def sample(
-    x,
     model,
+    x,
     steps,
     temperature=1.0,
     sample_logits=True,
     top_k=None,
     top_p=None,
-    cfg_scale=1.0,
-    num_samples=16,
-    sos_token=0,
     callback=None,
-    token_factorization=False,
 ):
     """
-    与版本B的 sample 接口完全对齐。
+    Autoregressive sampling with KV-cache.
 
-    - x: 类别标签 [B, 1] 或 None
-    - model: GPT模型实例
-    - steps: 生成步数
-    - cfg_scale: 未使用 (版本A不支持CFG, 忽略)
-    - token_factorization: 未使用, 忽略
+    - model: GPT model instance
+    - x: [B, T] conditioning token indices (can be a single SOS token)
+    - steps: number of tokens to generate
+    - temperature: sampling temperature
+    - sample_logits: if True, sample from distribution; if False, take argmax
+    - top_k: top-k filtering
+    - top_p: nucleus (top-p) filtering
+    - callback: optional callback called at each step with step index
     """
-    if x is None:
-        device = next(model.parameters()).device
-        x = torch.full((num_samples, 1), sos_token, device=device, dtype=torch.long)
+    block_size = model.get_block_size()
+    model.eval()
 
-    bs, _ = x.shape
-    device = x.device
-
-    # cfg_scale > 1.0 的逻辑在版本A中不支持，退化为无条件
-    # 但保持接口一致
-    cond_token = x
+    bs = x.shape[0]
+    cond_len = x.shape[1]
     sample_seq = x.clone()
 
-    cond_len = x.shape[1]
     max_seq_length = cond_len + steps
-
-    # setup_caches 在版本A中为空操作
     model.setup_caches(
         max_batch_size=bs,
         max_seq_length=max_seq_length,
@@ -525,22 +454,16 @@ def sample(
         if callback is not None:
             callback(n)
 
-        if n == 0:  # prefill
-            input_pos = torch.arange(0, cond_len, device=device)
-        elif n == 1:
-            input_pos = torch.tensor([cond_len], device=device)
-        else:
-            input_pos = input_pos + 1
-
-        logits, _ = model.decode_tokens(x, input_pos=input_pos, first_step=(n == 0))
+        logits, _ = model.decode_tokens(x, first_step=(n == 0))
 
         logits = logits[:, -1, :] / temperature
 
-        if top_k is not None:
-            if top_k > 0 or (top_p is not None and top_p < 1.0):
-                logits = top_k_top_p_filtering(
-                    logits, top_k=top_k, top_p=top_p if top_p is not None else 1.0
-                )
+        if top_k is not None or top_p is not None:
+            logits = top_k_top_p_filtering(
+                logits,
+                top_k=top_k if top_k is not None else 0,
+                top_p=top_p if top_p is not None else 1.0,
+            )
 
         probs = F.softmax(logits, dim=-1)
 
@@ -551,12 +474,8 @@ def sample(
 
         sample_seq = torch.cat((sample_seq, x), dim=1)
 
-        # 构造下一步输入 (token, cls_label) 元组
-        x = (x, cond_token)
-
     sample_seq = sample_seq[:, cond_len:]  # cut conditioning off
     return sample_seq
-
 
 #### clustering utils (保持不变)
 
