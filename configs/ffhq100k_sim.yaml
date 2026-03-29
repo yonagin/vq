@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/vq/sim_log/ffhq_256" # Please specify your own path
+        dirpath: "/vq/sim_log/ffhq_256" # Please specify your own path,fk
         save_top_k: -1 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
