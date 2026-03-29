@@ -2,7 +2,7 @@ import os, math
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-
+import lightning as L
 from main import instantiate_from_config
 from taming.modules.util import SOSProvider
 
@@ -13,7 +13,7 @@ def disabled_train(self, mode=True):
     return self
 
 
-class Net2NetTransformer(pl.LightningModule):
+class Net2NetTransformer(L.LightningModule):
     def __init__(self,
                  transformer_config,
                  first_stage_config,
