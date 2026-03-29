@@ -585,7 +585,6 @@ class ASVQ(nn.Module):
         z_q = F.embedding(indices, quant_codebook)
 
         if shape is not None:
-            print(z_q.shape)
             z_q = z_q.view(shape)
             # reshape back to match original input shape
             z_q = z_q.permute(0, 3, 1, 2).contiguous()
