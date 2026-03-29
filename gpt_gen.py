@@ -86,7 +86,7 @@ if __name__ == "__main__":
 
     opt, unknown = parser.parse_known_args()
     ckpt = opt.ckpt
-    config = OmegaConf.load(opt.config[0])  # since only one config
+    config = OmegaConf.load(opt.config)  # since only one config
 
     model, global_step = load_model(config, ckpt, gpu=True, eval_mode=True)
 
