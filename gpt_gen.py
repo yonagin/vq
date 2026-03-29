@@ -16,9 +16,7 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 from tqdm import tqdm
-
-# We assume the project structure allows these imports.
-# Make sure 'taming' is in the Python path.
+import importlib
 from taming.models.cond_transformer import Net2NetTransformer
 from taming.modules.transformer.mingpt import sample
 
