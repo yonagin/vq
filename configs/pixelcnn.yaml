@@ -27,7 +27,7 @@ trainer:
       name:
 
 model:
-  class_path: taming.models.pixelcnn.PixelCNNLightningModule
+  class_path: taming.models.pixelcnn.PixelCNN
   init_args:
     first_stage_key: image
     cond_stage_key: class_label

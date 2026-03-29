@@ -13,7 +13,7 @@ def disabled_train(self, mode=True):
     return self
 
 
-class PixelCNNLightningModule(L.LightningModule):
+class PixelCNN(L.LightningModule):
     def __init__(
         self,
         first_stage_config,

@@ -36,7 +36,7 @@ model:
       target: taming.modules.transformer.mingpt.GPT
       params:
         vocab_size: 16384 
-        block_size: 256
+        block_size: 512
         n_layer: 24
         n_head: 16
         n_embd: 1024
