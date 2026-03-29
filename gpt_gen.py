@@ -141,14 +141,9 @@ if __name__ == "__main__":
 
         # 5. Decode the generated token indices back into an image
         # Determine the shape of the latent space tensor: (batch, channels, height, width)
-        try:
-            z_channels = model.first_stage_model.ddconfig.z_channels
-        except AttributeError:
-            print("Warning: Could not find 'z_channels' in model config. This may cause issues.")
-            # Fallback to a default if necessary, though it might be incorrect
-            z_channels = 256 # A common value for VQGANs
-
+        z_channels = model.first_stage_model.ddconfig.z_channels
         z_shape = (bs, z_channels, opt.height, opt.width)
+        print(indices.shape)
         generated_images = model.decode_to_img(indices[:, c_indices.shape[1]:], z_shape)
 
         # 6. Save the generated images to the output directory
