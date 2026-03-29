@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from tqdm import tqdm
 
-from taming.models.pixelcnn import PixelCNNLightningModule
+from taming.models.pixelcnn import PixelCNN
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,7 +41,7 @@ def get_parser() -> argparse.ArgumentParser:
 
 def load_model(config_path: str, ckpt_path: str) -> PixelCNNLightningModule:
     config = OmegaConf.load(config_path)
-    model = PixelCNNLightningModule(**config.model.init_args)
+    model = PixelCNN(**config.model.init_args)
     state = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(state["state_dict"], strict=False)
     model.to(DEVICE)
