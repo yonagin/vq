@@ -18,7 +18,7 @@ class Net2NetTransformer(L.LightningModule):
                  transformer_config,
                  first_stage_config,
                  cond_stage_config,
-                 permuter_config=None,
+                 #permuter_config=None,
                  ckpt_path=None,
                  ignore_keys=[],
                  first_stage_key="image",
@@ -36,9 +36,9 @@ class Net2NetTransformer(L.LightningModule):
         self.cond_stage_key = cond_stage_key
         self.init_first_stage_from_ckpt(first_stage_config)
         self.init_cond_stage_from_ckpt(cond_stage_config)
-        if permuter_config is None:
-            permuter_config = {"target": "taming.modules.transformer.permuter.Identity"}
-        self.permuter = instantiate_from_config(config=permuter_config)
+        # if permuter_config is None:
+        #     permuter_config = {"target": "taming.modules.transformer.permuter.Identity"}
+        # self.permuter = instantiate_from_config(config=permuter_config)
         self.transformer = instantiate_from_config(config=transformer_config)
 
         if ckpt_path is not None:
@@ -134,7 +134,7 @@ class Net2NetTransformer(L.LightningModule):
 
     @torch.no_grad()
     def decode_to_img(self, index, zshape):
-        index = self.permuter(index, reverse=True)
+        #index = self.permuter(index, reverse=True)
         bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
         quant_z = self.first_stage_model.quantize.get_codebook_entry(
             index.reshape(-1), shape=bhwc)
