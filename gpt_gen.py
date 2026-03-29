@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
         # 5. Decode the generated token indices back into an image
         # Determine the shape of the latent space tensor: (batch, channels, height, width)
-        z_shape = (bs, z_channels, opt.height, opt.width)
+        z_shape = (bs, z_channels, h, w)
         print(indices.shape)
         generated_images = model.decode_to_img(indices[:, c_indices.shape[1]:], z_shape)
 
