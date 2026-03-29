@@ -112,25 +112,22 @@ if __name__ == "__main__":
     print(f"Generating {total} samples and saving to {opt.outdir}")
     sample_idx = 0
 
-    # 1. Construct the conditional input ('coord') based on faceshq.py
     h, w = opt.height, opt.width
     # Create a normalized coordinate grid for a single sample
     coord_base = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
-    # Replicate the grid for the entire batch
-    coord_batch = np.tile(coord_base, (bs, 1, 1, 1))
-    # Convert to a tensor and prepare for the model
-    coord_tensor = torch.from_numpy(coord_batch).to(DEVICE)
-    # Permute from (B, H, W, C) to (B, C, H, W) as expected by the model
-    c_input = coord_tensor.permute(0, 3, 1, 2).contiguous().float()
-
-    # 2. Encode the coordinate input to get conditioning tokens
-    _, c_indices = model.encode_to_c(c_input)
-
-    # 3. Define the number of image tokens to generate
     num_image_tokens = opt.height * opt.width
 
 
     for bs in tqdm(batches, desc="Sampling Batches"):
+
+        # Replicate the grid for the entire batch
+        coord_batch = np.tile(coord_base, (bs, 1, 1, 1))
+        # Convert to a tensor and prepare for the model
+        coord_tensor = torch.from_numpy(coord_batch).to(DEVICE)
+        # Permute from (B, H, W, C) to (B, C, H, W) as expected by the model
+        c_input = coord_tensor.permute(0, 3, 1, 2).contiguous().float()
+        _, c_indices = model.encode_to_c(c_input)
+
         # 4. Sample image tokens autoregressively using the transformer
         z_indices = sample(
             model=model.transformer,
