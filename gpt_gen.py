@@ -127,7 +127,7 @@ if __name__ == "__main__":
     h, w = latent_hw, latent_hw
     # Create a normalized coordinate grid for a single sample
     coord_base = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
-    num_image_tokens = opt.height * opt.width
+    num_image_tokens = latent_hw**2
 
     for bs in tqdm(batches, desc="Sampling Batches"):
 
