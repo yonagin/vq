@@ -27,7 +27,7 @@ trainer:
       name:
 
 model:
-  class_path: taming.models.cond_transformer.Net2NetTransformer
+  class_path: taming.models.cond_transformer_llama.Net2NetTransformer
   init_args:
     learning_rate: 1e-4
     first_stage_key: image
