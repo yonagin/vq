@@ -39,7 +39,7 @@ def get_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_model(config_path: str, ckpt_path: str) -> PixelCNNLightningModule:
+def load_model(config_path: str, ckpt_path: str) -> PixelCNN:
     config = OmegaConf.load(config_path)
     model = PixelCNN(**config.model.init_args)
     state = torch.load(ckpt_path, map_location="cpu")

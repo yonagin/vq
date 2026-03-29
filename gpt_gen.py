@@ -53,54 +53,56 @@ def get_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_model(config_path: str, ckpt_path: str) -> Net2NetTransformer:
-    """
-    Loads the Net2NetTransformer model from a configuration file and a checkpoint.
-    """
-    config = OmegaConf.load(config_path)
-    # Instantiate the model using parameters from the config file
-    # This assumes the config structure matches the model's __init__ signature
-    model = Net2NetTransformer(**config.model.params)
-    
-    # Load the checkpoint
-    state = torch.load(ckpt_path, map_location="cpu")
-    
-    # PyTorch Lightning saves the model's state in the 'state_dict' key
-    if "state_dict" in state:
-        state = state["state_dict"]
-        
-    # Load the state dict, ignoring non-matching keys
-    model.load_state_dict(state, strict=False)
-    
-    # Move model to the target device and set to evaluation mode
-    model.to(DEVICE)
-    model.eval()
-    
-    # Freeze model parameters for inference
-    for param in model.parameters():
-        param.requires_grad = False
-        
-    print(f"Model loaded from {ckpt_path} and moved to {DEVICE}.")
-    return model
+def load_model_from_config(config, sd, gpu=True, eval_mode=True):
+    model = instantiate_from_config(config)
+    if sd is not None:
+        model.load_state_dict(sd, strict=False)
+    if gpu:
+        model = model.to(DEVICE)
+    if eval_mode:
+        model.eval()
+    return {"model": model}
 
 
-@torch.no_grad()
-def run(args: argparse.Namespace) -> None:
-    """Main execution function for generating samples."""
-    model = load_model(args.config, args.ckpt)
-    os.makedirs(args.outdir, exist_ok=True)
+def load_model(config, ckpt, gpu, eval_mode):
+    # load the specified checkpoint
+    if ckpt:
+        pl_sd = torch.load(ckpt, map_location="cpu")
+        global_step = pl_sd.get("global_step", None)
+        if global_step:
+            print(f"loaded model from global step {global_step}.")
+    else:
+        pl_sd = {"state_dict": None}
+        global_step = None
+    model = load_model_from_config(
+        config.model, pl_sd["state_dict"], gpu=gpu, eval_mode=eval_mode
+    )["model"]
+    return model, global_step
 
-    total = args.num_samples
+if __name__ == "__main__":
+    # Add the current working directory to the system path to allow local imports
+    sys.path.append(os.getcwd())
+    parser = get_parser()
+
+    opt, unknown = parser.parse_known_args()
+    ckpt = opt.ckpt
+    config = OmegaConf.load(opt.config[0])  # since only one config
+
+    model, global_step = load_model(config, ckpt, gpu=True, eval_mode=True)
+
+    os.makedirs(opt.outdir, exist_ok=True)
+
+    total = opt.num_samples
     # Create batches based on total samples and batch size
-    batches = [args.batch_size] * (total // args.batch_size)
-    if total % args.batch_size > 0:
-        batches.append(total % args.batch_size)
+    batches = [opt.batch_size] * (total // opt.batch_size)
+    if total % opt.batch_size > 0:
+        batches.append(total % opt.batch_size)
 
-    print(f"Generating {total} samples and saving to {args.outdir}")
+    print(f"Generating {total} samples and saving to {opt.outdir}")
     sample_idx = 0
 
     # 1. Construct the conditional input ('coord') based on faceshq.py
-    h, w = args.height, args.width
+    h, w = opt.height, opt.width
     # Create a normalized coordinate grid for a single sample
     coord_base = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
     # Replicate the grid for the entire batch
@@ -114,7 +116,7 @@ def run(args: argparse.Namespace) -> None:
     _, c_indices = model.encode_to_c(c_input)
 
     # 3. Define the number of image tokens to generate
-    num_image_tokens = args.height * args.width
+    num_image_tokens = opt.height * opt.width
 
 
     for bs in tqdm(batches, desc="Sampling Batches"):
@@ -123,10 +125,10 @@ def run(args: argparse.Namespace) -> None:
             model=model.transformer,
             x=c_indices,  # The conditioning tokens are the starting sequence
             steps=num_image_tokens,
-            temperature=args.temperature,
+            temperature=opt.temperature,
             sample_logits=True,
-            top_k=args.top_k if args.top_k > 0 else None, # Pass None if top_k is 0
-            top_p=args.top_p,
+            top_k=opt.top_k if opt.top_k > 0 else None, # Pass None if top_k is 0
+            top_p=opt.top_p,
         )
 
         # 5. Decode the generated token indices back into an image
@@ -138,33 +140,12 @@ def run(args: argparse.Namespace) -> None:
             # Fallback to a default if necessary, though it might be incorrect
             z_channels = 256 # A common value for VQGANs
 
-        z_shape = (bs, z_channels, args.height, args.width)
+        z_shape = (bs, z_channels, opt.height, opt.width)
         generated_images = model.decode_to_img(z_indices, z_shape)
 
         # 6. Save the generated images to the output directory
         for i in range(bs):
             pil_img = chw_to_pillow(generated_images[i])
-            pil_img.save(os.path.join(args.outdir, f"{sample_idx + i:06d}.png"))
+            pil_img.save(os.path.join(opt.outdir, f"{sample_idx + i:06d}.png"))
         
         sample_idx += bs
-
-
-def main() -> None:
-    """Script entry point."""
-    # Add the current working directory to the system path to allow local imports
-    sys.path.append(os.getcwd())
-    
-    parser = get_parser()
-    args = parser.parse_args()
-    
-    start_time = time.time()
-    print(f"Starting generation with arguments: {args}")
-    
-    run(args)
-    
-    end_time = time.time()
-    print(f"Generation finished successfully in {end_time - start_time:.2f} seconds.")
-
-
-if __name__ == "__main__":
-    main()
