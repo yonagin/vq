@@ -47,6 +47,16 @@ def chw_to_pillow(x: torch.Tensor) -> Image.Image:
     arr = np.clip(arr * 255, 0, 255).astype(np.uint8)
     return Image.fromarray(arr)
 
+def _infer_latent_size(first_stage_config):
+    params = first_stage_config.params
+    dd = params.ddconfig
+    z_channels = dd.z_channels
+    resolution = dd.resolution
+    downs = len(dd.ch_mult) - 1
+    spatial = resolution // (2**downs)
+    if spatial * spatial <= 0:
+        raise ValueError("Invalid latent spatial size inferred")
+    return z_channels, spatial
 
 def get_parser() -> argparse.ArgumentParser:
     """Creates the argument parser for the script."""
@@ -59,8 +69,6 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", default=1.0, type=float, help="Sampling temperature. Higher values increase randomness.")
     parser.add_argument("-k", "--top_k", default=100, type=int, help="Top-k filtering for sampling. Set to 0 to disable.")
     parser.add_argument("-p", "--top_p", default=1.0, type=float, help="Nucleus (top-p) filtering for sampling.")
-    parser.add_argument("--height", default=16, type=int, help="Height of the latent token grid")
-    parser.add_argument("--width", default=16, type=int, help="Width of the latent token grid")
     return parser
 
 
@@ -112,11 +120,14 @@ if __name__ == "__main__":
     print(f"Generating {total} samples and saving to {opt.outdir}")
     sample_idx = 0
 
-    h, w = opt.height, opt.width
+    z_channels, latent_hw = _infer_latent_size(
+        config.model.init_args.first_stage_config
+    )
+    
+    h, w = latent_hw, latent_hw
     # Create a normalized coordinate grid for a single sample
     coord_base = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
     num_image_tokens = opt.height * opt.width
-
 
     for bs in tqdm(batches, desc="Sampling Batches"):
 
@@ -141,7 +152,6 @@ if __name__ == "__main__":
 
         # 5. Decode the generated token indices back into an image
         # Determine the shape of the latent space tensor: (batch, channels, height, width)
-        z_channels = model.first_stage_model.ddconfig.z_channels
         z_shape = (bs, z_channels, opt.height, opt.width)
         print(indices.shape)
         generated_images = model.decode_to_img(indices[:, c_indices.shape[1]:], z_shape)
