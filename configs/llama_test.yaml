@@ -13,7 +13,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/mnt/vq/llama_log/ffhq_256"
+        dirpath: "/vq/llama_log/ffhq_256"
         save_top_k: 5
         monitor: "train/loss"
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -22,7 +22,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
-      save_dir: "/mnt/vq/llama_log/ffhq_256"
+      save_dir: "/vq/llama_log/ffhq_256"
       version: "test"
       name:
 
@@ -57,7 +57,7 @@ model:
     first_stage_config:
       target: taming.models.vq.VQModel
       params:
-        ckpt_path: "/mnt/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt" #specify your path for tokenizer 
+        ckpt_path: "/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt" #specify your path for tokenizer 
         use_ema: True
         model_type: "full"
         stage: transformer
