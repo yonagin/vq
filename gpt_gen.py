@@ -39,13 +39,11 @@ def instantiate_from_config(config):
 
 def chw_to_pillow(x: torch.Tensor) -> Image.Image:
     """Converts a CHW tensor to a Pillow image."""
-    # Move tensor to CPU and convert to numpy array, handling channel-first format
     arr = x.detach().cpu().numpy().transpose(1, 2, 0)
-    # Denormalize from [-1, 1] to [0, 1]
     arr = (arr + 1.0) / 2.0
-    # Scale to [0, 255] and convert to uint8
     arr = np.clip(arr * 255, 0, 255).astype(np.uint8)
     return Image.fromarray(arr)
+
 
 def _infer_latent_size(first_stage_config):
     params = first_stage_config.params
@@ -57,6 +55,34 @@ def _infer_latent_size(first_stage_config):
     if spatial * spatial <= 0:
         raise ValueError("Invalid latent spatial size inferred")
     return z_channels, spatial
+
+
+def _infer_image_resolution(first_stage_config):
+    """Infer the full image resolution from the first stage config."""
+    return first_stage_config.params.ddconfig.resolution
+
+
+def make_coord_batch(batch_size, image_resolution):
+    """
+    Construct a batch of coordinate conditioning inputs, matching
+    the dataset convention used during training (e.g. FFHQTrain with coord=True).
+
+    The dataset builds coords at image-space resolution:
+        h, w, _ = image.shape
+        coord = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
+
+    Returns:
+        torch.Tensor of shape (batch_size, 1, H, W) on DEVICE, float32.
+    """
+    h = w = image_resolution
+    coord = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
+    # Replicate for the batch
+    coord_batch = np.tile(coord, (batch_size, 1, 1, 1))  # (B, H, W, 1)
+    coord_tensor = torch.from_numpy(coord_batch).to(DEVICE)
+    # Permute from (B, H, W, C) to (B, C, H, W)
+    coord_tensor = coord_tensor.permute(0, 3, 1, 2).contiguous().float()
+    return coord_tensor
+
 
 def get_parser() -> argparse.ArgumentParser:
     """Creates the argument parser for the script."""
@@ -84,7 +110,6 @@ def load_model_from_config(config, sd, gpu=True, eval_mode=True):
 
 
 def load_model(config, ckpt, gpu, eval_mode):
-    # load the specified checkpoint
     if ckpt:
         pl_sd = torch.load(ckpt, map_location="cpu")
         global_step = pl_sd.get("global_step", None)
@@ -99,20 +124,18 @@ def load_model(config, ckpt, gpu, eval_mode):
     return model, global_step
 
 if __name__ == "__main__":
-    # Add the current working directory to the system path to allow local imports
     sys.path.append(os.getcwd())
     parser = get_parser()
 
     opt, unknown = parser.parse_known_args()
     ckpt = opt.ckpt
-    config = OmegaConf.load(opt.config)  # since only one config
+    config = OmegaConf.load(opt.config)
 
     model, global_step = load_model(config, ckpt, gpu=True, eval_mode=True)
 
     os.makedirs(opt.outdir, exist_ok=True)
 
     total = opt.num_samples
-    # Create batches based on total samples and batch size
     batches = [opt.batch_size] * (total // opt.batch_size)
     if total % opt.batch_size > 0:
         batches.append(total % opt.batch_size)
@@ -123,41 +146,38 @@ if __name__ == "__main__":
     z_channels, latent_hw = _infer_latent_size(
         config.model.init_args.first_stage_config
     )
-    
+    image_resolution = _infer_image_resolution(
+        config.model.init_args.first_stage_config
+    )
+
     h, w = latent_hw, latent_hw
-    # Create a normalized coordinate grid for a single sample
-    coord_base = np.arange(h * w, dtype=np.float32).reshape(h, w, 1) / float(h * w)
-    num_image_tokens = latent_hw**2
+    num_image_tokens = latent_hw ** 2
 
     for bs in tqdm(batches, desc="Sampling Batches"):
 
-        # Replicate the grid for the entire batch
-        coord_batch = np.tile(coord_base, (bs, 1, 1, 1))
-        # Convert to a tensor and prepare for the model
-        coord_tensor = torch.from_numpy(coord_batch).to(DEVICE)
-        # Permute from (B, H, W, C) to (B, C, H, W) as expected by the model
-        c_input = coord_tensor.permute(0, 3, 1, 2).contiguous().float()
+        # Build coordinate conditioning at image resolution, matching the dataset
+        c_input = make_coord_batch(bs, image_resolution)
+
         _, c_indices = model.encode_to_c(c_input)
 
-        # 4. Sample image tokens autoregressively using the transformer
+        # Sample image tokens autoregressively using the transformer
         indices = sample(
             model=model.transformer,
-            x=c_indices,  # The conditioning tokens are the starting sequence
+            x=c_indices,
             steps=num_image_tokens,
             temperature=opt.temperature,
             sample_logits=True,
-            top_k=opt.top_k if opt.top_k > 0 else None, # Pass None if top_k is 0
+            top_k=opt.top_k if opt.top_k > 0 else None,
             top_p=opt.top_p,
         )
 
-        # 5. Decode the generated token indices back into an image
-        # Determine the shape of the latent space tensor: (batch, channels, height, width)
+        # Decode the generated token indices back into an image
         z_shape = (bs, z_channels, h, w)
         generated_images = model.decode_to_img(indices, z_shape)
 
-        # 6. Save the generated images to the output directory
+        # Save the generated images
         for i in range(bs):
             pil_img = chw_to_pillow(generated_images[i])
             pil_img.save(os.path.join(opt.outdir, f"{sample_idx + i:06d}.png"))
-        
+
         sample_idx += bs
