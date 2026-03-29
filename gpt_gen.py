@@ -26,6 +26,19 @@ from taming.modules.transformer.mingpt import sample
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def get_obj_from_str(string, reload=False):
+    print(string)
+    module, cls = string.rsplit(".", 1)
+    if reload:
+        module_imp = importlib.import_module(module)
+        importlib.reload(module_imp)
+    return getattr(importlib.import_module(module, package=None), cls)
+
+def instantiate_from_config(config):
+    if not "class_path" in config:
+        raise KeyError("Expected key `class_path` to instantiate.")
+    return get_obj_from_str(config["class_path"])(**config.get("init_args", dict()))
+
 def chw_to_pillow(x: torch.Tensor) -> Image.Image:
     """Converts a CHW tensor to a Pillow image."""
     # Move tensor to CPU and convert to numpy array, handling channel-first format
