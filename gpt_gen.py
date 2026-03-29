@@ -129,7 +129,7 @@ if __name__ == "__main__":
         _, c_indices = model.encode_to_c(c_input)
 
         # 4. Sample image tokens autoregressively using the transformer
-        z_indices = sample(
+        indices = sample(
             model=model.transformer,
             x=c_indices,  # The conditioning tokens are the starting sequence
             steps=num_image_tokens,
@@ -149,7 +149,7 @@ if __name__ == "__main__":
             z_channels = 256 # A common value for VQGANs
 
         z_shape = (bs, z_channels, opt.height, opt.width)
-        generated_images = model.decode_to_img(z_indices, z_shape)
+        generated_images = model.decode_to_img(indices[:, c_indices.shape[1]:], z_shape)
 
         # 6. Save the generated images to the output directory
         for i in range(bs):
