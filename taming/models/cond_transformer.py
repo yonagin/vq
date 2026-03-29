@@ -26,6 +26,7 @@ class Net2NetTransformer(L.LightningModule):
                  downsample_cond_size=-1,
                  pkeep=1.0,
                  sos_token=0,
+                 learning_rate=None,
                  unconditional=False,
                  ):
         super().__init__()
@@ -44,6 +45,7 @@ class Net2NetTransformer(L.LightningModule):
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
         self.downsample_cond_size = downsample_cond_size
         self.pkeep = pkeep
+        self.learning_rate = learning_rate
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
