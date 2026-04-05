@@ -13,8 +13,8 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         dirpath: "/vq/ldm_log/emas" # Please specify your own path
-        save_top_k: 5 
-        monitor: val/loss_simple_ema
+        save_top_k: 10 
+        monitor: val/loss
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -27,7 +27,7 @@ trainer:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
         save_dir: "/vq/ldm_log/emas" #Please specify your own path
-        version: 'test'
+        version: 'n16384'
         name:
 
 model:
@@ -57,7 +57,7 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.VQModelInterface
       params:
-        ckpt_path: "/vq/vq_log/ffhq_256/n16384-epoch=79-step=75040.ckpt" #specify your path for tokenizer 
+        ckpt_path: "/vq/vq_log/ffhq_256/epoch=84-step=79730.ckpt" #specify your path for tokenizer 
         use_ema: true
         model_type: "full"
         ddconfig:
@@ -72,7 +72,7 @@ model:
           attn_resolutions: [16]
           dropout: 0.0
         quantconfig:
-          target: taming.modules.vqvae.quantize.VQ
+          target: taming.modules.vqvae.quantize.ASVQ
           params:
             n_e: 16384
             e_dim: 32
@@ -84,7 +84,7 @@ model:
 data:
   class_path: main.DataModuleFromConfig
   init_args:
-    batch_size: 64
+    batch_size: 128
     num_workers: 8
     train:
       target: taming.data.faceshq.FFHQTrain

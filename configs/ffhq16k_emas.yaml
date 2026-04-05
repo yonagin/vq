@@ -21,7 +21,7 @@ trainer:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
         save_dir: "/vq/vq_log/ffhq_256" #Please specify your own path
-        version: "n16k_d32_emas"
+        version: "n16k_d8_emas"
         name:
 
 model:
@@ -30,7 +30,7 @@ model:
     model_type: "full"  # Options: "light" (simpler, faster) or "full" (with attention and timestep support)
     ddconfig:
       double_z: False
-      z_channels: 32
+      z_channels: 8
       resolution: 256
       in_channels: 3
       out_ch: 3
@@ -44,7 +44,7 @@ model:
       target: taming.modules.vqvae.quantize.ASVQ
       params:
         n_e: 16384
-        e_dim: 32
+        e_dim: 8
         beta: 0.33
         fixed_cb: false
         use_ema_scale: true
