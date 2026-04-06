@@ -200,8 +200,9 @@ def parse_args() -> argparse.Namespace:
         "--temperature", type=float, default=1.0, help="Sampling temperature for noise"
     )
     parser.add_argument(
-        "--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale"
+        "--cfg_scale", type=float, default=4.0, help="Classifier-free guidance scale"
     )
+    parser.add_argument("--quantized", action="store_false")
     parser.add_argument(
         "--prompt",
         type=str,
@@ -308,7 +309,7 @@ def main() -> None:
                 shape=shape,
                 conditioning=cond,
                 eta=args.eta,
-                quantize_x0=True,
+                quantize_x0=args.quantized,
                 temperature=args.temperature,
                 log_every_t=args.log_every_t,
                 unconditional_guidance_scale=args.cfg_scale,
