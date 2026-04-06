@@ -203,6 +203,7 @@ def parse_args() -> argparse.Namespace:
         "--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale"
     )
     parser.add_argument("--quantized", action="store_true")
+    
     parser.add_argument(
         "--prompt",
         type=str,
