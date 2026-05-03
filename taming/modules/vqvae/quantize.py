@@ -10,6 +10,81 @@ import math
 LossBreakdown = namedtuple('LossBreakdown', ['per_sample_entropy', 'codebook_entropy', 'vqloss', 'avg_probs'])
 
 
+class AffineTransform(nn.Module):
+    def __init__(
+        self,
+        feature_size,
+        use_running_statistics=False,
+        momentum=0.1,
+        lr_scale=1,
+        num_groups=1,
+    ):
+        super().__init__()
+
+        self.use_running_statistics = use_running_statistics
+        self.num_groups = num_groups
+
+        if use_running_statistics:
+            self.momentum = momentum
+            self.register_buffer('running_statistics_initialized', torch.zeros(1))
+            self.register_buffer('running_ze_mean', torch.zeros(num_groups, feature_size))
+            self.register_buffer('running_ze_var', torch.ones(num_groups, feature_size))
+            self.register_buffer('running_c_mean', torch.zeros(num_groups, feature_size))
+            self.register_buffer('running_c_var', torch.ones(num_groups, feature_size))
+        else:
+            self.scale = nn.parameter.Parameter(torch.zeros(num_groups, feature_size))
+            self.bias = nn.parameter.Parameter(torch.zeros(num_groups, feature_size))
+            self.lr_scale = lr_scale
+
+    @torch.no_grad()
+    def update_running_statistics(self, z_e, c):
+        # Under-estimating z_e statistics slightly is empirically more stable
+        # for straight-through estimation in some unnormalized bottlenecks.
+        if self.training and self.use_running_statistics:
+            unbiased = False
+
+            ze_mean = z_e.mean([0, 1]).unsqueeze(0)
+            ze_var = z_e.var([0, 1], unbiased=unbiased).unsqueeze(0)
+            c_mean = c.mean([0]).unsqueeze(0)
+            c_var = c.var([0], unbiased=unbiased).unsqueeze(0)
+
+            if not self.running_statistics_initialized:
+                self.running_ze_mean.data.copy_(ze_mean)
+                self.running_ze_var.data.copy_(ze_var)
+                self.running_c_mean.data.copy_(c_mean)
+                self.running_c_var.data.copy_(c_var)
+                self.running_statistics_initialized.fill_(1)
+            else:
+                self.running_ze_mean = (
+                    self.momentum * ze_mean + (1 - self.momentum) * self.running_ze_mean
+                )
+                self.running_ze_var = (
+                    self.momentum * ze_var + (1 - self.momentum) * self.running_ze_var
+                )
+                self.running_c_mean = (
+                    self.momentum * c_mean + (1 - self.momentum) * self.running_c_mean
+                )
+                self.running_c_var = (
+                    self.momentum * c_var + (1 - self.momentum) * self.running_c_var
+                )
+
+    def forward(self, codebook):
+        scale, bias = self.get_affine_params()
+        n, c = codebook.shape
+        codebook = codebook.view(self.num_groups, -1, codebook.shape[-1])
+        codebook = scale * codebook + bias
+        return codebook.reshape(n, c)
+
+    def get_affine_params(self):
+        if self.use_running_statistics:
+            scale = (self.running_ze_var / (self.running_c_var + 1e-8)).sqrt()
+            bias = -scale * self.running_c_mean + self.running_ze_mean
+        else:
+            scale = 1.0 + self.lr_scale * self.scale
+            bias = self.lr_scale * self.bias
+        return scale.unsqueeze(1), bias.unsqueeze(1)
+
+
 class GumbelQuantize(nn.Module):
     """
     credit to @karpathy: https://github.com/karpathy/deep-vector-quantization/blob/main/model.py (thanks!)
@@ -449,6 +524,134 @@ class SimVQ1D(SimVQ):
             min_encoding_indices = min_encoding_indices.reshape(z.shape[0],-1) # add batch axis
             min_encoding_indices = self.remap_to_used(min_encoding_indices)
             min_encoding_indices = min_encoding_indices.reshape(-1,1) # flatten
+
+        if self.sane_index_shape:
+            min_encoding_indices = min_encoding_indices.reshape(
+                z_q.shape[0], z_q.shape[2], z_q.shape[3])
+
+        return (z_q, min_encoding_indices), LossBreakdown(torch.tensor(0.0), torch.tensor(0.0), vq_loss, torch.tensor(0.0))
+
+
+class AffineVQ(VectorQuantizer):
+    def __init__(self, n_e, e_dim, beta=0.25, remap=None, unknown_index="random",
+                 sane_index_shape=False, legacy=False, l2_normalize=False,
+                 use_running_statistics=False, affine_momentum=0.1,
+                 affine_lr_scale=1, num_groups=1):
+        super().__init__(
+            n_e=n_e,
+            e_dim=e_dim,
+            beta=beta,
+            remap=remap,
+            unknown_index=unknown_index,
+            sane_index_shape=sane_index_shape,
+            legacy=legacy,
+            l2_normalize=l2_normalize,
+        )
+        self.affine_transform = AffineTransform(
+            feature_size=e_dim,
+            use_running_statistics=use_running_statistics,
+            momentum=affine_momentum,
+            lr_scale=affine_lr_scale,
+            num_groups=num_groups,
+        )
+
+    def get_quant_codebook(self, z_flattened=None):
+        codebook = self.embedding.weight
+        if z_flattened is not None:
+            self.affine_transform.update_running_statistics(z_flattened.unsqueeze(0), codebook)
+        return self.affine_transform(codebook)
+
+    def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
+        assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
+        assert rescale_logits==False, "Only for interface compatible with Gumbel"
+        assert return_logits==False, "Only for interface compatible with Gumbel"
+
+        z = rearrange(z, 'b c h w -> b h w c').contiguous()
+        assert z.shape[-1] == self.e_dim
+        z_flattened = z.view(-1, self.e_dim)
+
+        quant_codebook = self.get_quant_codebook(z_flattened)
+        if self.l2_normalize:
+            z_for_distance = torch.nn.functional.normalize(z_flattened)
+            codebook_for_distance = torch.nn.functional.normalize(quant_codebook)
+        else:
+            z_for_distance = z_flattened
+            codebook_for_distance = quant_codebook
+
+        d = torch.sum(z_for_distance ** 2, dim=1, keepdim=True) + \
+            torch.sum(codebook_for_distance**2, dim=1) - 2 * \
+            torch.einsum('bd,dn->bn', z_for_distance, rearrange(codebook_for_distance, 'n d -> d n'))
+
+        min_encoding_indices = torch.argmin(d, dim=1)
+        z_q = F.embedding(min_encoding_indices, quant_codebook).view(z.shape)
+
+        vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+                   torch.mean((z_q - z.detach()) ** 2)
+
+        z_q = z + (z_q - z).detach()
+        z_q = rearrange(z_q, 'b h w c -> b c h w').contiguous()
+
+        if self.remap is not None:
+            min_encoding_indices = min_encoding_indices.reshape(z.shape[0],-1)
+            min_encoding_indices = self.remap_to_used(min_encoding_indices)
+            min_encoding_indices = min_encoding_indices.reshape(-1,1)
+
+        if self.sane_index_shape:
+            min_encoding_indices = min_encoding_indices.reshape(
+                z_q.shape[0], z_q.shape[2], z_q.shape[3])
+
+        return (z_q, min_encoding_indices), LossBreakdown(torch.tensor(0.0), torch.tensor(0.0), vq_loss, torch.tensor(0.0))
+
+    def get_codebook_entry(self, indices, shape):
+        if self.remap is not None:
+            indices = indices.reshape(shape[0],-1)
+            indices = self.unmap_to_all(indices)
+            indices = indices.reshape(-1)
+
+        z_q = F.embedding(indices, self.get_quant_codebook())
+
+        if shape is not None:
+            z_q = z_q.view(shape)
+            z_q = z_q.permute(0, 3, 1, 2).contiguous()
+
+        return z_q
+
+
+class AffineVQ1D(AffineVQ):
+    def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
+        assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
+        assert rescale_logits==False, "Only for interface compatible with Gumbel"
+        assert return_logits==False, "Only for interface compatible with Gumbel"
+
+        z = rearrange(z, 'b c h -> b h c').contiguous()
+        assert z.shape[-1] == self.e_dim
+        z_flattened = z.view(-1, self.e_dim)
+
+        quant_codebook = self.get_quant_codebook(z_flattened)
+        if self.l2_normalize:
+            z_for_distance = torch.nn.functional.normalize(z_flattened)
+            codebook_for_distance = torch.nn.functional.normalize(quant_codebook)
+        else:
+            z_for_distance = z_flattened
+            codebook_for_distance = quant_codebook
+
+        d = torch.sum(z_for_distance ** 2, dim=1, keepdim=True) + \
+            torch.sum(codebook_for_distance**2, dim=1) - 2 * \
+            torch.einsum('bd,dn->bn', z_for_distance, rearrange(codebook_for_distance, 'n d -> d n'))
+
+        min_encoding_indices = torch.argmin(d, dim=1)
+        z_q = F.embedding(min_encoding_indices, quant_codebook).view(z.shape)
+
+        vq_loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+                   torch.mean((z_q - z.detach()) ** 2)
+
+        z_q = z + (z_q - z).detach()
+        z_q = rearrange(z_q, 'b h c -> b c h').contiguous()
+
+        if self.remap is not None:
+            min_encoding_indices = min_encoding_indices.reshape(z.shape[0],-1)
+            min_encoding_indices = self.remap_to_used(min_encoding_indices)
+            min_encoding_indices = min_encoding_indices.reshape(-1,1)
 
         if self.sane_index_shape:
             min_encoding_indices = min_encoding_indices.reshape(
