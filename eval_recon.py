@@ -19,10 +19,8 @@ from tqdm import tqdm
 from scipy import linalg
 import argparse
 import torchvision.utils as vutils
-import lpips
-import pyiqa
 import piq
-from cleanfid import fid
+import pyiqa
 
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -56,12 +54,18 @@ def load_vqgan_new(config, ckpt_path=None, is_gumbel=False):
         model.load_state_dict(sd, strict=False)
     return model.eval()
 
+
 def get_args():
     parser = argparse.ArgumentParser(description="inference parameters")
     parser.add_argument("--config_file", required=True, type=str)
     parser.add_argument("--ckpt_path", required=True, type=str)
     parser.add_argument("--batch_size", default=64, type=int)
-    parser.add_argument("--psnr_y", action='store_true', help="Use Y channel for PSNR calculation")
+    parser.add_argument("--psnr_y", action='store_true',
+                        help="Use Y channel for PSNR calculation")
+    parser.add_argument("--perceptual", action='store_true',
+                        help="Whether to compute perceptual metrics: LPIPS (Alex & VGG) and FID. "
+                             "These are more time-consuming and memory-intensive. "
+                             "If not set, only PSNR, SSIM, PPL and utilization are computed.")
     return parser.parse_args()
 
 
@@ -75,27 +79,36 @@ def main(args):
     codebook_size = model.quantize.n_e
     usage = torch.zeros(codebook_size, dtype=torch.long)
 
-    # LPIPS
-    loss_fn_alex = lpips.LPIPS(net="alex").to(DEVICE).eval()
-    loss_fn_vgg = lpips.LPIPS(net="vgg").to(DEVICE).eval()
-    lpips_alex_sum = 0.0
-    lpips_vgg_sum = 0.0
+    # ---------- 感知指标（可选） ----------
+    if args.perceptual:
+        import lpips
+        from cleanfid import fid as clean_fid
+        loss_fn_alex = lpips.LPIPS(net="alex").to(DEVICE).eval()
+        loss_fn_vgg  = lpips.LPIPS(net="vgg").to(DEVICE).eval()
+        lpips_alex_sum = 0.0
+        lpips_vgg_sum  = 0.0
+    # --------------------------------------
 
-    # PSNR/SSIM running sums 
+    # PSNR / SSIM
     psnr_sum = 0.0
     ssim_sum = 0.0
     num_images = 0
-    psnr_computer = pyiqa.create_metric('psnr', test_y_channel=args.psnr_y, color_space='rgb', device=DEVICE)
+    psnr_computer = pyiqa.create_metric(
+        'psnr', test_y_channel=args.psnr_y, color_space='rgb', device=DEVICE
+    )
 
     dataset = instantiate_from_config(config_data.data)
     dataset.prepare_data()
     dataset.setup()
     dataloader = dataset._val_dataloader()
 
-    recons_save_dir = Path(args.config_file).parent / "recons"
-    source_save_dir = Path(args.config_file).parent / "source"
-    os.makedirs(recons_save_dir, exist_ok=True)
-    os.makedirs(source_save_dir, exist_ok=True)
+    # 只有需要计算 FID 时才必须保存图片；
+    # 但为了保持原有行为，这里根据 --perceptual 决定是否创建目录并保存。
+    if args.perceptual:
+        recons_save_dir = Path(args.config_file).parent / "recons"
+        source_save_dir = Path(args.config_file).parent / "source"
+        os.makedirs(recons_save_dir, exist_ok=True)
+        os.makedirs(source_save_dir, exist_ok=True)
 
     total = len(dataloader) if hasattr(dataloader, "__len__") else None
     pbar = tqdm(total=total, dynamic_ncols=True)
@@ -114,93 +127,110 @@ def main(args):
 
             reconstructed_images = reconstructed_images.clamp(-1, 1)
 
-            # usage (faster than dict)
+            # Codebook usage
             idx_cpu = indices.flatten().detach().to("cpu", non_blocking=True)
             usage += torch.bincount(idx_cpu, minlength=codebook_size)
 
-            # LPIPS (expects [-1,1])
-            lpips_alex_sum += loss_fn_alex(images, reconstructed_images).sum().item()
-            lpips_vgg_sum += loss_fn_vgg(images, reconstructed_images).sum().item()
+            # ---------- 感知指标（可选） ----------
+            if args.perceptual:
+                # LPIPS 期望输入范围 [-1, 1]
+                lpips_alex_sum += loss_fn_alex(images, reconstructed_images).sum().item()
+                lpips_vgg_sum  += loss_fn_vgg(images, reconstructed_images).sum().item()
+            # --------------------------------------
 
-            # to [0,1]
+            # 转换到 [0, 1]
             images_01 = (images + 1) / 2
-            rec_01 = (reconstructed_images + 1) / 2
+            rec_01    = (reconstructed_images + 1) / 2
 
-            # PSNR & SSIM using pyiqa and piq (per-image)
             B = images_01.shape[0]
+
+            # PSNR & SSIM（逐张计算）
             for i in range(B):
-                # Convert to format expected by pyiqa and piq
                 img_i = images_01[i:i+1]
                 rec_i = rec_01[i:i+1]
-                
-                # PSNR using pyiqa
-                psnr_score = psnr_computer(img_i, rec_i)
-                psnr_sum += psnr_score.sum().item()
-                
-                # SSIM using piq
-                ssim_score = piq.ssim(img_i, rec_i, data_range=1., reduction='none')
-                ssim_sum += ssim_score.sum().item()
 
-            # save images (optional but kept)
-            for b in range(B):
-                vutils.save_image(
-                    images_01[b],
-                    os.path.join(source_save_dir, f"{num_images + b}.png"),
-                    normalize=False,
-                    nrow=1,
-                )
-                vutils.save_image(
-                    rec_01[b],
-                    os.path.join(recons_save_dir, f"{num_images + b}.png"),
-                    normalize=False,
-                    nrow=1,
-                )
+                psnr_score = psnr_computer(img_i, rec_i)
+                psnr_sum  += psnr_score.sum().item()
+
+                ssim_score = piq.ssim(img_i, rec_i, data_range=1., reduction='none')
+                ssim_sum  += ssim_score.sum().item()
+
+            # ---------- 保存图片（仅在计算感知指标时需要） ----------
+            if args.perceptual:
+                for b in range(B):
+                    vutils.save_image(
+                        images_01[b],
+                        os.path.join(source_save_dir, f"{num_images + b}.png"),
+                        normalize=False,
+                        nrow=1,
+                    )
+                    vutils.save_image(
+                        rec_01[b],
+                        os.path.join(recons_save_dir, f"{num_images + b}.png"),
+                        normalize=False,
+                        nrow=1,
+                    )
+            # ----------------------------------------------------------
 
             num_images += B
 
-            # update progress bar postfix
-            psnr_avg = psnr_sum / max(num_images, 1)
-            ssim_avg = ssim_sum / max(num_images, 1)
-            pbar.set_postfix(
-                {
-                    "PSNR": f"{psnr_avg:.3f}",
-                    "SSIM": f"{ssim_avg:.4f}",
-                    "imgs": num_images,
-                }
-            )
+            # 进度条实时显示
+            postfix = {
+                "PSNR": f"{psnr_sum / max(num_images, 1):.3f}",
+                "SSIM": f"{ssim_sum / max(num_images, 1):.4f}",
+                "imgs": num_images,
+            }
+            if args.perceptual:
+                postfix["LPIPS_A"] = f"{lpips_alex_sum / max(num_images, 1):.4f}"
+            pbar.set_postfix(postfix)
             pbar.update(1)
 
     pbar.close()
-    
-    lpips_alex_value = lpips_alex_sum / max(num_images, 1)
-    lpips_vgg_value = lpips_vgg_sum / max(num_images, 1)
-    ssim_value = ssim_sum / max(num_images, 1)
-    psnr_value = psnr_sum / max(num_images, 1)
-    fid_value = fid.compute_fid(str(recons_save_dir), str(source_save_dir), mode="clean")
-    utilization = (usage > 0).float().mean().item()
+
+    # -------- 汇总结果 --------
+    ssim_value  = ssim_sum  / max(num_images, 1)
+    psnr_value  = psnr_sum  / max(num_images, 1)
 
     if usage.sum() > 0:
-        probs = usage.float() / usage.sum()
-        # Only compute log for non-zero probabilities to avoid -inf
-        entropy = -torch.sum(probs[probs > 0] * torch.log(probs[probs > 0]))
+        probs     = usage.float() / usage.sum()
+        entropy   = -torch.sum(probs[probs > 0] * torch.log(probs[probs > 0]))
         ppl_value = torch.exp(entropy).item()
     else:
         ppl_value = 0.0
 
+    utilization = (usage > 0).float().mean().item()
+
+    if args.perceptual:
+        lpips_alex_value = lpips_alex_sum / max(num_images, 1)
+        lpips_vgg_value  = lpips_vgg_sum  / max(num_images, 1)
+        fid_value = clean_fid.compute_fid(
+            str(recons_save_dir), str(source_save_dir), mode="clean"
+        )
+
+    # -------- 输出 & 保存 --------
     def print_and_save(message, file):
         print(message)
         file.write(message + "\n")
 
     out_path = Path(args.ckpt_path).parent / "result.txt"
     with open(out_path, "w") as f:
-        print_and_save(f"FID: {fid_value}", f)
-        print_and_save(f"LPIPS_ALEX: {lpips_alex_value}", f)
-        print_and_save(f"LPIPS_VGG: {lpips_vgg_value}", f)
-        print_and_save(f"SSIM: {ssim_value}", f)
-        print_and_save(f"PSNR: {psnr_value}", f)
-        print_and_save(f"PPL: {ppl_value}", f)
+        # 基础指标（始终输出）
+        print_and_save(f"PSNR:        {psnr_value}", f)
+        print_and_save(f"SSIM:        {ssim_value}", f)
+        print_and_save(f"PPL:         {ppl_value}", f)
         print_and_save(f"utilization: {utilization}", f)
-        print_and_save(f"num_images: {num_images}", f)
+        print_and_save(f"num_images:  {num_images}", f)
+
+        # 感知指标（可选）
+        if args.perceptual:
+            print_and_save(f"FID:         {fid_value}", f)
+            print_and_save(f"LPIPS_ALEX:  {lpips_alex_value}", f)
+            print_and_save(f"LPIPS_VGG:   {lpips_vgg_value}", f)
+        else:
+            print_and_save(
+                "[INFO] Perceptual metrics (FID, LPIPS) were skipped. "
+                "Re-run with --perceptual to compute them.", f
+            )
 
     print(f"Saved to: {out_path}")
 
