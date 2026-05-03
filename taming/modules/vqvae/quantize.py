@@ -128,7 +128,7 @@ class VectorQuantizer(nn.Module):
         self.legacy = legacy
 
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
-        self.embedding.weight.data.uniform_(-1.0 / self.n_e, 1.0 / self.n_e)
+        nn.init.normal_(self.embedding.weight, mean=0, std=self.e_dim**-0.5)
 
         self.remap = remap
         if self.remap is not None:
@@ -459,7 +459,7 @@ class SimVQ1D(SimVQ):
 
 class ASVQ(nn.Module):
     def __init__(self, n_e, e_dim, beta, remap=None, unknown_index="random",
-                 sane_index_shape=False, fixed_cb=False, use_ema_scale=True, ema_decay=0.99,legacy=False):
+                 sane_index_shape=False, fixed_cb=False, use_ema_scale=True, ema_decay=0.99, legacy=False):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim

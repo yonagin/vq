@@ -67,19 +67,19 @@ data:
     train:
       target: taming.data.imagenet.ImageNetTrain
       params:
-        hf_root: "/mnt/vq/imagenet-1k_256"
+        hf_root: "/vq/imagenet-1k_256"
         size: 128
         subset:
     validation:
       target: taming.data.imagenet.ImageNetValidation
       params:
-        hf_root: "/mnt/vq/imagenet-1k_256"
+        hf_root: "/vq/imagenet-1k_256"
         size: 128
         subset:
     test:
       target: taming.data.imagenet.ImageNetValidation
       params:
-        hf_root: "/mnt/vq/imagenet-1k_256"
+        hf_root: "/vq/imagenet-1k_256"
         size: 128
         subset:
 
