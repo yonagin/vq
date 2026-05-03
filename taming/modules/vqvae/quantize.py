@@ -6,6 +6,7 @@ from torch import einsum
 from einops import rearrange
 from collections import namedtuple
 import math
+from taming.modules.vqvae.qbridge import QBridge_models
 
 LossBreakdown = namedtuple('LossBreakdown', ['per_sample_entropy', 'codebook_entropy', 'vqloss', 'avg_probs'])
 
@@ -364,9 +365,57 @@ class VectorQuantizer1D(VectorQuantizer):
 
         return (z_q, min_encoding_indices), LossBreakdown(torch.tensor(0.0), torch.tensor(0.0), vq_loss, torch.tensor(0.0))
 
-class SimVQ(nn.Module):
+
+def _build_bridge_projector(
+    e_dim,
+    codebook_size,
+    bridge_type="linear",
+    bridge_model_name=None,
+    bridge_num_layers=5,
+    bridge_input_size=None,
+    bridge_kwargs=None,
+):
+    bridge_kwargs = {} if bridge_kwargs is None else dict(bridge_kwargs)
+
+    if bridge_model_name is None:
+        bridge_type = bridge_type.lower()
+        if bridge_type in ("identity", "none"):
+            bridge_model_name = "Qbridge-none"
+        elif bridge_type in ("linear", "lin", "single_linear"):
+            bridge_model_name = "Qbridge-lin/1"
+        elif bridge_type in ("mlp",):
+            if bridge_num_layers == 1:
+                bridge_model_name = "Qbridge-lin/1"
+            elif bridge_num_layers == 5:
+                bridge_model_name = "Qbridge-lin/5"
+            else:
+                raise ValueError(f"Unsupported MLP depth: {bridge_num_layers}. Only 1 and 5 are supported.")
+        elif bridge_type in ("dit",):
+            bridge_model_name = "QBridge-B/4"
+        else:
+            raise ValueError(f"Unsupported bridge_type: {bridge_type}")
+
+    if bridge_model_name not in QBridge_models:
+        raise ValueError(f"Unknown bridge_model_name: {bridge_model_name}")
+
+    if bridge_input_size is None:
+        root = int(math.isqrt(codebook_size))
+        if root * root == codebook_size:
+            bridge_input_size = root
+
+    if "input_size" not in bridge_kwargs and bridge_input_size is not None:
+        bridge_kwargs["input_size"] = bridge_input_size
+    if "in_channels" not in bridge_kwargs:
+        bridge_kwargs["in_channels"] = e_dim
+
+    return QBridge_models[bridge_model_name](**bridge_kwargs), bridge_model_name
+
+
+class BridgeVQ(nn.Module):
     def __init__(self, n_e, e_dim, beta=0.25, remap=None, unknown_index="random",
-                 sane_index_shape=False, legacy=True):
+                 sane_index_shape=False, legacy=True, bridge_type="linear",
+                 bridge_model_name=None, bridge_num_layers=5,
+                 bridge_input_size=None, bridge_kwargs=None):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim
@@ -377,8 +426,17 @@ class SimVQ(nn.Module):
         nn.init.normal_(self.embedding.weight, mean=0, std=self.e_dim**-0.5)
         for p in self.embedding.parameters():
             p.requires_grad = False
-        
-        self.embedding_proj = nn.Linear(self.e_dim, self.e_dim)
+
+        self.embedding_proj, self.bridge_model_name = _build_bridge_projector(
+            e_dim=self.e_dim,
+            codebook_size=self.n_e,
+            bridge_type=bridge_type,
+            bridge_model_name=bridge_model_name,
+            bridge_num_layers=bridge_num_layers,
+            bridge_input_size=bridge_input_size,
+            bridge_kwargs=bridge_kwargs,
+        )
+        self.bridge_type = bridge_type
     
         self.remap = remap
         if self.remap is not None:
@@ -394,6 +452,21 @@ class SimVQ(nn.Module):
             self.re_embed = n_e
 
         self.sane_index_shape = sane_index_shape
+
+    def get_quant_codebook(self):
+        if self.bridge_model_name in ("Qbridge-none", "Qbridge-lin/1", "Qbridge-lin/5"):
+            codebook = self.embedding.weight.unsqueeze(0).transpose(1, 2)
+            codebook = self.embedding_proj(codebook)
+            return codebook.squeeze(0).transpose(0, 1).contiguous()
+
+        root = int(math.isqrt(self.n_e))
+        if root * root != self.n_e:
+            raise ValueError(
+                f"Bridge model {self.bridge_model_name} requires a square codebook, got n_e={self.n_e}"
+            )
+        codebook = self.embedding.weight.transpose(0, 1).contiguous().view(1, self.e_dim, root, root)
+        codebook = self.embedding_proj(codebook)
+        return codebook.view(self.e_dim, self.n_e).transpose(0, 1).contiguous()
 
     def remap_to_used(self, inds):
         ishape = inds.shape
@@ -428,8 +501,8 @@ class SimVQ(nn.Module):
         assert z.shape[-1] == self.e_dim
         z_flattened = z.view(-1, self.e_dim)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        
-        quant_codebook = self.embedding_proj(self.embedding.weight)
+
+        quant_codebook = self.get_quant_codebook()
 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
@@ -473,7 +546,7 @@ class SimVQ(nn.Module):
             indices = indices.reshape(-1) # flatten again
 
         # get quantized latent vectors
-        z_q = self.embedding(indices)
+        z_q = F.embedding(indices, self.get_quant_codebook())
 
         if shape is not None:
             z_q = z_q.view(shape)
@@ -483,7 +556,7 @@ class SimVQ(nn.Module):
         return z_q
     
 
-class SimVQ1D(SimVQ):
+class BridgeVQ1D(BridgeVQ):
     def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
         assert rescale_logits==False, "Only for interface compatible with Gumbel"
@@ -494,8 +567,7 @@ class SimVQ1D(SimVQ):
         
         z_flattened = z.view(-1, self.e_dim)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-        
-        quant_codebook = self.embedding_proj(self.embedding.weight)
+        quant_codebook = self.get_quant_codebook()
 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
             torch.sum(quant_codebook**2, dim=1) - 2 * \
@@ -530,6 +602,20 @@ class SimVQ1D(SimVQ):
                 z_q.shape[0], z_q.shape[2], z_q.shape[3])
 
         return (z_q, min_encoding_indices), LossBreakdown(torch.tensor(0.0), torch.tensor(0.0), vq_loss, torch.tensor(0.0))
+
+
+class SimVQ(BridgeVQ):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("bridge_type", "linear")
+        kwargs.setdefault("bridge_model_name", "Qbridge-lin/1")
+        super().__init__(*args, **kwargs)
+
+
+class SimVQ1D(BridgeVQ1D):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("bridge_type", "linear")
+        kwargs.setdefault("bridge_model_name", "Qbridge-lin/1")
+        super().__init__(*args, **kwargs)
 
 
 class AffineVQ(VectorQuantizer):
