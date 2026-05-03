@@ -327,11 +327,15 @@ class QBridge_lin(nn.Module):
         super().__init__()
         self.linear = nn.Linear(in_channels, in_channels)
     def forward(self, x, y=None):
-        B, C, H, W = x.shape
-        x = x.permute(0, 2, 3, 1)
-        x = self.linear(x)
-        x = x.permute(0, 3, 1, 2)
-        return x
+        if x.ndim == 3:
+            x = x.permute(0, 2, 1)
+            x = self.linear(x)
+            return x.permute(0, 2, 1)
+        if x.ndim == 4:
+            x = x.permute(0, 2, 3, 1)
+            x = self.linear(x)
+            return x.permute(0, 3, 1, 2)
+        raise ValueError(f"QBridge_lin expects a 3D or 4D tensor, got shape {tuple(x.shape)}")
     
 class QBridge_MLP_5(nn.Module):
     def __init__(self, in_channels=256, **kwargs):
@@ -348,11 +352,15 @@ class QBridge_MLP_5(nn.Module):
             nn.Linear(in_channels, in_channels)
         )
     def forward(self, x, y=None):
-        B, C, H, W = x.shape
-        x = x.permute(0, 2, 3, 1)
-        x = self.linear_5(x)
-        x = x.permute(0, 3, 1, 2)
-        return x
+        if x.ndim == 3:
+            x = x.permute(0, 2, 1)
+            x = self.linear_5(x)
+            return x.permute(0, 2, 1)
+        if x.ndim == 4:
+            x = x.permute(0, 2, 3, 1)
+            x = self.linear_5(x)
+            return x.permute(0, 3, 1, 2)
+        raise ValueError(f"QBridge_MLP_5 expects a 3D or 4D tensor, got shape {tuple(x.shape)}")
     
 class QBridge_none(nn.Module):
     def __init__(self, in_channels=256, **kwargs):
