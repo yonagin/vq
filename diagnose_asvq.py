@@ -16,7 +16,7 @@ from tqdm import tqdm
 sys.path.append(os.getcwd())
 
 
-METHOD_ORDER = ["vanilla", "simvq", "affine", "mq", "fvq", "asvq", "asvq65k"]
+METHOD_ORDER = ["vanilla", "simvq", "affine", "mq", "fvq", "asvq"]
 METHOD_LABELS = {
     "vanilla": "VQ",
     "simvq": "SimVQ",

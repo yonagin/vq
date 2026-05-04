@@ -1,0 +1,48 @@
+VanillaVQ:
+Transform type: none
+Extra params: 0
+PSNR:        24.085392534008026
+SSIM:        0.6881345961216092
+PPL:         561.2379150390625
+utilization: 0.04351806640625
+
+ASVQ:
+Transform type: diagonal scale
+Extra params:?
+PSNR:        25.166266753730774
+SSIM:        0.7384673185756803
+PPL:         15143.9833984375
+utilization: 0.997314453125
+
+AffineVQ:
+Transform type: affine
+Extra params:?
+PSNR:        24.267857673187255
+SSIM:        0.696222977836728
+PPL:         822.30859375
+utilization: 0.060302734375
+
+SimVQ:
+Transform type: dense linear
+Extra params:?
+PSNR:        25.024478373832704
+SSIM:        0.7268124747920036
+PPL:         12420.623046875
+utilization: 1.0
+
+MQ:
+Transform type: nonlinear
+Extra params:?
+PSNR:        24.55958471956253
+SSIM:        0.6953200208312273
+PPL:         11991.490234375
+utilization: 0.99981689453125
+
+FVQ:
+Transform type: nonlinear
+Extra params:?
+PSNR:        24.59728337343216
+SSIM:        0.695463102054298
+PPL:         13548.6982421875
+utilization: 1.0
+
