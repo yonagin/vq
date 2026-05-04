@@ -5,13 +5,11 @@ import math
 import os
 import re
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from einops import rearrange
 from omegaconf import OmegaConf
 from tqdm import tqdm
@@ -27,17 +25,18 @@ METHOD_LABELS = {
     "mq": "MQ",
     "fvq": "FVQ",
     "asvq": "ASVQ",
+    "asvq65k": "ASVQ-65K",
 }
-LOWER_IS_BETTER = {
-    "scale_match_error": True,
-    "geo_drift": True,
-    "scale_drift": True,
-    "assignment_flip_wo_scale": False,
-    "psnr": False,
-    "ssim": False,
-    "ppl": False,
-    "utilization": False,
+METHOD_COLORS = {
+    "vanilla": "#4C78A8",
+    "simvq": "#F58518",
+    "affine": "#54A24B",
+    "mq": "#B279A2",
+    "fvq": "#E45756",
+    "asvq": "#111111",
+    "asvq65k": "#72B7B2",
 }
+EPS = 1e-8
 
 
 def get_obj_from_str(string):
@@ -55,12 +54,6 @@ def instantiate_from_config(config):
 
 def ensure_dir(path):
     Path(path).mkdir(parents=True, exist_ok=True)
-
-
-def safe_tensor(x):
-    if x is None:
-        return None
-    return x.detach().float().cpu()
 
 
 def load_config(path):
@@ -104,6 +97,16 @@ def default_ckpt_dir(config):
     return None
 
 
+def parse_explicit_ckpts(items):
+    explicit = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"--ckpt expects method=path1,path2, got: {item}")
+        method, paths = item.split("=", 1)
+        explicit[method.strip()] = paths
+    return explicit
+
+
 def discover_checkpoints(config, method, run_root=None, explicit=None):
     if explicit and method in explicit:
         paths = [Path(p) for p in explicit[method].split(",")]
@@ -122,7 +125,11 @@ def load_model(config, ckpt_path, device):
     model = instantiate_from_config(config.model)
     ckpt = torch.load(str(ckpt_path), map_location="cpu")
     state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
-    model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"[warn] {Path(ckpt_path).name}: missing keys: {len(missing)}")
+    if unexpected:
+        print(f"[warn] {Path(ckpt_path).name}: unexpected keys: {len(unexpected)}")
     model.eval().to(device)
     return model
 
@@ -143,56 +150,36 @@ def effective_codebook(quant):
         except TypeError:
             return quant.get_quant_codebook(None).detach()
     if hasattr(quant, "get_norm_cb") and hasattr(quant, "scale"):
-        return (quant.scale.detach() * quant.get_norm_cb().detach()).detach()
+        return (quant.scale.detach().view(1, -1) * quant.get_norm_cb().detach()).detach()
     raw = codebook_raw(quant)
     return raw.detach() if raw is not None else None
 
 
 @torch.no_grad()
-def normalized_codebook(quant):
-    if hasattr(quant, "get_norm_cb"):
-        return quant.get_norm_cb().detach()
-    cb = effective_codebook(quant)
-    if cb is None:
-        return None
-    std = cb.std(dim=0, keepdim=True).clamp_min(1e-8)
-    return cb / std
+def decompose_codebook(quant):
+    """Return effective codebook, channel scale, and scale-normalized geometry.
 
+    For ASVQ, the decomposition uses its explicit s and normalized codebook.
+    For other quantizers, it uses the analytical channel std decomposition of
+    the effective codebook, which makes the scale-vs-geometry comparison fair.
+    """
+    if hasattr(quant, "get_norm_cb") and hasattr(quant, "scale"):
+        scale = quant.scale.detach().float().flatten().clamp_min(EPS)
+        norm_cb = quant.get_norm_cb().detach().float()
+        eff_cb = scale.view(1, -1) * norm_cb
+        return eff_cb, scale, norm_cb
 
-def vector_stats(x):
-    x = safe_tensor(x).numpy()
-    return {
-        "mean": float(np.mean(x)),
-        "std": float(np.std(x)),
-        "cv": float(np.std(x) / (np.mean(x) + 1e-12)),
-        "min": float(np.min(x)),
-        "max": float(np.max(x)),
-    }
-
-
-def cosine_drift(a, b):
-    if a is None or b is None or a.shape != b.shape:
-        return float("nan")
-    af = a.reshape(-1).float()
-    bf = b.reshape(-1).float()
-    return float(1.0 - F.cosine_similarity(af, bf, dim=0).item())
-
-
-def log_l1_drift(a, b):
-    if a is None or b is None or a.shape != b.shape:
-        return float("nan")
-    return float((torch.log(a.clamp_min(1e-8)) - torch.log(b.clamp_min(1e-8))).abs().mean().item())
+    eff_cb = effective_codebook(quant).detach().float()
+    scale = eff_cb.std(dim=0, unbiased=False).clamp_min(EPS)
+    norm_cb = eff_cb / scale.view(1, -1)
+    return eff_cb, scale, norm_cb
 
 
 def scale_match_error(feature_std, cb_std):
-    if feature_std is None or cb_std is None:
-        return float("nan")
-    return float((torch.log(feature_std.clamp_min(1e-8)) - torch.log(cb_std.clamp_min(1e-8))).abs().mean().item())
+    return float((torch.log(feature_std.clamp_min(EPS)) - torch.log(cb_std.clamp_min(EPS))).abs().mean().item())
 
 
 def scale_corr(feature_std, cb_std):
-    if feature_std is None or cb_std is None:
-        return float("nan")
     x = feature_std.detach().cpu().numpy()
     y = cb_std.detach().cpu().numpy()
     if np.std(x) < 1e-12 or np.std(y) < 1e-12:
@@ -200,16 +187,12 @@ def scale_corr(feature_std, cb_std):
     return float(np.corrcoef(x, y)[0, 1])
 
 
-def entropy_from_counts(counts):
-    total = counts.sum()
-    if total <= 0:
-        return 0.0, 0.0, 0.0
-    probs = counts.float() / total
-    used = probs > 0
-    entropy = -(probs[used] * probs[used].log()).sum()
-    ppl = entropy.exp().item()
-    utilization = used.float().mean().item()
-    return float(entropy.item()), float(ppl), float(utilization)
+def js_divergence(p, q):
+    p = p / p.sum().clamp_min(EPS)
+    q = q / q.sum().clamp_min(EPS)
+    m = 0.5 * (p + q)
+    return float(0.5 * (p * (p.clamp_min(EPS) / m.clamp_min(EPS)).log()).sum().item() +
+                 0.5 * (q * (q.clamp_min(EPS) / m.clamp_min(EPS)).log()).sum().item())
 
 
 def load_validation_loader(config, batch_size, num_workers):
@@ -223,218 +206,124 @@ def load_validation_loader(config, batch_size, num_workers):
 
 
 @torch.no_grad()
-def collect_feature_assignment_stats(model, dataloader, max_batches, device, intervention=False):
-    quant = model.quantize
-    n_e = int(getattr(quant, "n_e"))
-    counts = torch.zeros(n_e, dtype=torch.long)
-    counts_wo_scale = torch.zeros(n_e, dtype=torch.long)
+def collect_features(model, loader, device, max_batches, max_points):
     sum_z = None
-    sum_z2 = None
-    total = 0
-    flips = 0
-    seen = 0
+    sumsq_z = None
+    count = 0
+    samples = []
+    kept = 0
 
-    use_ema = bool(getattr(model, "use_ema", False))
-    scope = model.ema_scope() if use_ema else nullcontext()
-    with scope:
-        for batch_idx, batch in enumerate(tqdm(dataloader, total=max_batches, desc="val stats", leave=False)):
-            if batch_idx >= max_batches:
-                break
-            images = batch["image"].permute(0, 3, 1, 2).to(device, non_blocking=True)
-            h = model.encoder(images)
-            z = rearrange(h, "b c h w -> b h w c").contiguous().view(-1, h.shape[1])
-            if sum_z is None:
-                sum_z = torch.zeros(z.shape[1], device=device)
-                sum_z2 = torch.zeros(z.shape[1], device=device)
-            sum_z += z.sum(dim=0)
-            sum_z2 += (z * z).sum(dim=0)
-            total += z.shape[0]
+    for batch_idx, batch in enumerate(loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            break
+        x = model.get_input(batch, model.image_key).to(device)
+        h = model.encoder(x)
+        z = rearrange(h, "b c h w -> (b h w) c").float()
+        if sum_z is None:
+            sum_z = torch.zeros(z.shape[1], device=device)
+            sumsq_z = torch.zeros(z.shape[1], device=device)
+        sum_z += z.sum(dim=0)
+        sumsq_z += (z * z).sum(dim=0)
+        count += z.shape[0]
 
-            (_, indices), _ = quant(h)
-            idx = indices.reshape(-1).detach().cpu()
-            counts += torch.bincount(idx, minlength=n_e)
+        if kept < max_points:
+            take = min(max_points - kept, z.shape[0])
+            samples.append(z[:take].detach().cpu())
+            kept += take
 
-            if intervention and hasattr(quant, "get_norm_cb") and hasattr(quant, "scale"):
-                cb_wo_scale = quant.get_norm_cb().detach()
-                d = torch.sum(z**2, dim=1, keepdim=True) + torch.sum(cb_wo_scale**2, dim=1) - 2 * torch.einsum(
-                    "bd,dn->bn", z, cb_wo_scale.t()
-                )
-                idx_wo = torch.argmin(d, dim=1).detach().cpu()
-                counts_wo_scale += torch.bincount(idx_wo, minlength=n_e)
-                flips += int((idx_wo != idx).sum().item())
-                seen += int(idx.numel())
-
-    if total == 0:
-        return {}
-    mean = sum_z / total
-    var = (sum_z2 / total - mean * mean).clamp_min(0)
-    feature_std = var.sqrt().detach().cpu()
-    entropy, ppl, utilization = entropy_from_counts(counts)
-    out = {
-        "feature_std": feature_std,
-        "val_entropy": entropy,
-        "val_ppl": ppl,
-        "val_utilization": utilization,
+    mean = sum_z / max(count, 1)
+    var = (sumsq_z / max(count, 1) - mean * mean).clamp_min(0)
+    std = var.sqrt().detach().cpu()
+    sample_tensor = torch.cat(samples, dim=0) if samples else torch.empty(0)
+    return {
+        "mean": mean.detach().cpu(),
+        "std": std,
+        "samples": sample_tensor,
+        "count": count,
     }
-    if intervention and seen > 0:
-        entropy_wo, ppl_wo, util_wo = entropy_from_counts(counts_wo_scale)
-        out.update(
-            {
-                "assignment_flip_wo_scale": flips / seen,
-                "val_entropy_wo_scale": entropy_wo,
-                "val_ppl_wo_scale": ppl_wo,
-                "val_utilization_wo_scale": util_wo,
-            }
-        )
-    return out
 
 
-class nullcontext:
-    def __enter__(self):
-        return None
+@torch.no_grad()
+def argmin_assignments(z, codebook, chunk_size):
+    z = z.float()
+    codebook = codebook.float()
+    cb_t = codebook.t().contiguous()
+    cb_norm = (codebook * codebook).sum(dim=1)
+    out = []
+    for start in range(0, z.shape[0], chunk_size):
+        part = z[start:start + chunk_size]
+        dist = (part * part).sum(dim=1, keepdim=True) + cb_norm.view(1, -1) - 2 * part @ cb_t
+        out.append(dist.argmin(dim=1).cpu())
+    return torch.cat(out, dim=0)
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
 
-
-def read_result_txt(ckpt_path):
-    path = Path(ckpt_path).parent / "result.txt"
-    if not path.exists():
+def contribution_metrics(prev, cur):
+    prev_eff, prev_scale, prev_norm = prev
+    cur_eff, cur_scale, cur_norm = cur
+    if prev_eff.shape != cur_eff.shape:
         return {}
-    mapping = {
-        "PSNR": "psnr",
-        "SSIM": "ssim",
-        "PPL": "ppl",
-        "utilization": "utilization",
-        "FID": "fid",
-        "LPIPS_ALEX": "lpips_alex",
-        "LPIPS_VGG": "lpips_vgg",
+
+    denom = prev_eff.norm().clamp_min(EPS)
+    scale_only = (cur_scale.view(1, -1) * prev_norm - prev_eff).norm() / denom
+    norm_only = (prev_scale.view(1, -1) * cur_norm - prev_eff).norm() / denom
+    total = (cur_eff - prev_eff).norm() / denom
+    scale_share = scale_only / (scale_only + norm_only).clamp_min(EPS)
+    norm_cos_drift = 1.0 - F.cosine_similarity(prev_norm.flatten(), cur_norm.flatten(), dim=0)
+    scale_log_drift = (torch.log(cur_scale) - torch.log(prev_scale)).abs().mean()
+    return {
+        "effective_rel_drift": float(total.item()),
+        "scale_only_rel_drift": float(scale_only.item()),
+        "norm_only_rel_drift": float(norm_only.item()),
+        "scale_share": float(scale_share.item()),
+        "norm_share": float((1 - scale_share).item()),
+        "norm_cosine_drift": float(norm_cos_drift.item()),
+        "scale_log_l1_drift": float(scale_log_drift.item()),
     }
-    out = {}
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        if key in mapping:
-            try:
-                out[mapping[key]] = float(value.strip())
-            except ValueError:
-                pass
-    return out
 
 
-def parse_explicit_checkpoints(items):
-    out = {}
-    for item in items or []:
-        if "=" not in item:
-            raise ValueError(f"Invalid --checkpoint item: {item}. Expected method=path[,path2].")
-        key, value = item.split("=", 1)
-        out[key.strip().lower()] = value.strip()
-    return out
+def manifold_metrics(z_samples, feature_std, eff_cb):
+    if z_samples.numel() == 0:
+        return {}, None
+    z = z_samples.float()
+    z_mean = z.mean(dim=0, keepdim=True)
+    zc = z - z_mean
+    _, _, vh = torch.linalg.svd(zc, full_matrices=False)
+    basis = vh[: min(16, vh.shape[0])].t().contiguous()
+    z_proj = zc @ basis
+    cb_proj = (eff_cb.detach().cpu().float() - z_mean) @ basis
+    z_var = z_proj.var(dim=0, unbiased=False).clamp_min(EPS)
+    cb_var = cb_proj.var(dim=0, unbiased=False).clamp_min(EPS)
+    z_dist = z_var / z_var.sum()
+    cb_dist = cb_var / cb_var.sum()
+    cumulative = (cb_var.cumsum(0) / cb_var.sum()).numpy()
+    metrics = {
+        "pca_var_js": js_divergence(z_dist, cb_dist),
+        "pca_var_l1": float((z_dist - cb_dist).abs().mean().item()),
+        "pca_var_cos": float(F.cosine_similarity(z_dist, cb_dist, dim=0).item()),
+        "feature_cb_std_ratio_mean": float((eff_cb.detach().cpu().float().std(dim=0, unbiased=False).clamp_min(EPS) /
+                                            feature_std.clamp_min(EPS)).mean().item()),
+    }
+    return metrics, cumulative
 
 
-def write_csv(path, rows, fieldnames):
-    ensure_dir(Path(path).parent)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
+def assignment_without_scale_metrics(method, z_samples, eff_cb, scale, norm_cb, chunk_size):
+    if method not in ("asvq", "asvq65k") or z_samples.numel() == 0:
+        return {}
+    z = z_samples.cpu().float()
+    full_idx = argmin_assignments(z, eff_cb.cpu(), chunk_size)
+    no_scale_idx = argmin_assignments(z, norm_cb.detach().cpu().float(), chunk_size)
+    scalar_scale = scale.mean().view(1, 1).cpu() * norm_cb.detach().cpu().float()
+    scalar_idx = argmin_assignments(z, scalar_scale, chunk_size)
 
-
-def format_float(x, digits=3):
-    if x is None or (isinstance(x, float) and math.isnan(x)):
-        return "--"
-    return f"{float(x):.{digits}f}"
-
-
-def write_latex_table(path, rows):
-    ensure_dir(Path(path).parent)
-    metrics = [
-        ("scale_match_error", "SME $\\downarrow$"),
-        ("scale_corr", "Scale Corr. $\\uparrow$"),
-        ("geo_drift", "Geo. Drift $\\downarrow$"),
-        ("val_ppl", "PPL $\\uparrow$"),
-        ("val_utilization", "Util. $\\uparrow$"),
-        ("assignment_flip_wo_scale", "Flip w/o $s$ $\\uparrow$"),
-    ]
-    lines = [
-        "\\begin{table}[t]",
-        "\\centering",
-        "\\caption{Empirical diagnosis of scale coupling on ImageNet-1K.}",
-        "\\label{tab:scale_diagnosis}",
-        "\\begin{tabular}{l" + "c" * len(metrics) + "}",
-        "\\toprule",
-        "Method & " + " & ".join(title for _, title in metrics) + " \\\\",
-        "\\midrule",
-    ]
-    for row in rows:
-        vals = [METHOD_LABELS.get(row["method"], row["method"])]
-        for key, _ in metrics:
-            vals.append(format_float(row.get(key), 3))
-        lines.append(" & ".join(vals) + " \\\\")
-    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}", ""])
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def write_recon_latex_table(path, rows):
-    ensure_dir(Path(path).parent)
-    metrics = [
-        ("psnr", "PSNR $\\uparrow$"),
-        ("ssim", "SSIM $\\uparrow$"),
-        ("ppl", "Eval PPL $\\uparrow$"),
-        ("utilization", "Eval Util. $\\uparrow$"),
-        ("fid", "FID $\\downarrow$"),
-        ("lpips_alex", "LPIPS-A $\\downarrow$"),
-    ]
-    has_any = any(any(np.isfinite(row.get(k, np.nan)) for k, _ in metrics) for row in rows)
-    if not has_any:
-        return
-    lines = [
-        "\\begin{table}[t]",
-        "\\centering",
-        "\\caption{Reconstruction and codebook usage results parsed from each checkpoint directory's result.txt.}",
-        "\\label{tab:reconstruction_results}",
-        "\\begin{tabular}{l" + "c" * len(metrics) + "}",
-        "\\toprule",
-        "Method & " + " & ".join(title for _, title in metrics) + " \\\\",
-        "\\midrule",
-    ]
-    for row in rows:
-        vals = [METHOD_LABELS.get(row["method"], row["method"])]
-        for key, _ in metrics:
-            vals.append(format_float(row.get(key), 3))
-        lines.append(" & ".join(vals) + " \\\\")
-    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}", ""])
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def setup_matplotlib():
-    import matplotlib as mpl
-    import matplotlib.pyplot as plt
-
-    mpl.rcParams.update(
-        {
-            "font.family": "serif",
-            "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
-            "mathtext.fontset": "stix",
-            "font.size": 8,
-            "axes.labelsize": 8,
-            "axes.titlesize": 8,
-            "legend.fontsize": 7,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
-            "axes.linewidth": 0.6,
-            "xtick.major.width": 0.6,
-            "ytick.major.width": 0.6,
-            "pdf.fonttype": 42,
-            "ps.fonttype": 42,
-            "savefig.bbox": "tight",
-            "savefig.pad_inches": 0.02,
-        }
-    )
-    return plt
+    full_util = full_idx.unique().numel() / eff_cb.shape[0]
+    no_scale_util = no_scale_idx.unique().numel() / eff_cb.shape[0]
+    scalar_util = scalar_idx.unique().numel() / eff_cb.shape[0]
+    return {
+        "remove_s_flip_rate": float((full_idx != no_scale_idx).float().mean().item()),
+        "scalar_s_flip_rate": float((full_idx != scalar_idx).float().mean().item()),
+        "remove_s_util_delta": float(no_scale_util - full_util),
+        "scalar_s_util_delta": float(scalar_util - full_util),
+    }
 
 
 def smooth_xy(x, y, points=160):
@@ -442,309 +331,234 @@ def smooth_xy(x, y, points=160):
     y = np.asarray(y, dtype=float)
     mask = np.isfinite(x) & np.isfinite(y)
     x, y = x[mask], y[mask]
-    if len(x) <= 2:
+    if len(x) < 2:
         return x, y
     order = np.argsort(x)
     x, y = x[order], y[order]
-    if len(np.unique(x)) < 3:
-        return x, y
-    x_new = np.linspace(x.min(), x.max(), points)
+    dense_x = np.linspace(x.min(), x.max(), points)
+    dense_y = np.interp(dense_x, x, y)
+    if len(x) >= 4:
+        radius = max(2, points // 40)
+        grid = np.arange(-radius, radius + 1)
+        kernel = np.exp(-(grid * grid) / (2 * (radius / 2) ** 2))
+        kernel = kernel / kernel.sum()
+        pad = np.pad(dense_y, (radius, radius), mode="edge")
+        dense_y = np.convolve(pad, kernel, mode="valid")
+    return dense_x, dense_y
+
+
+def plot_metric(ax, rows_by_method, metric, ylabel, title, ylim=None):
+    for method, rows in rows_by_method.items():
+        x = [r["epoch"] for r in rows]
+        y = [r.get(metric, float("nan")) for r in rows]
+        sx, sy = smooth_xy(x, y)
+        label = METHOD_LABELS.get(method, method)
+        color = METHOD_COLORS.get(method, None)
+        ax.plot(sx, sy, color=color, lw=2.0, label=label)
+        ax.scatter(x, y, color=color, s=16, zorder=3)
+    ax.set_title(title)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(ylabel)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.grid(True, color="#E6E6E6", linewidth=0.8)
+
+
+def save_plots(rows_by_method, pca_curves, out_dir):
     try:
-        from scipy.interpolate import PchipInterpolator
+        import matplotlib
 
-        y_new = PchipInterpolator(x, y)(x_new)
-    except Exception:
-        y_new = np.interp(x_new, x, y)
-    window = max(3, int(points * 0.05) | 1)
-    kernel = np.ones(window) / window
-    pad = window // 2
-    y_pad = np.pad(y_new, (pad, pad), mode="edge")
-    y_smooth = np.convolve(y_pad, kernel, mode="valid")
-    return x_new, y_smooth
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "diagnose_asvq.py needs matplotlib for NeurIPS-style figures. "
+            "Install it with `pip install matplotlib`, then rerun the script."
+        ) from exc
 
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 8,
+        "axes.titlesize": 9,
+        "axes.labelsize": 8,
+        "legend.fontsize": 7,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    })
 
-def plot_curves(out_dir, rows):
-    plt = setup_matplotlib()
-    metrics = [
-        ("scale_match_error", "Scale matching error"),
-        ("scale_corr", "Scale correlation"),
-        ("geo_drift", "Geometry drift"),
-        ("val_ppl", "Perplexity"),
-    ]
-    colors = {
-        "vanilla": "#4C72B0",
-        "simvq": "#55A868",
-        "affine": "#C44E52",
-        "mq": "#8172B2",
-        "fvq": "#CCB974",
-        "asvq": "#000000",
-    }
-    by_method = defaultdict(list)
-    for row in rows:
-        by_method[row["method"]].append(row)
+    fig, axes = plt.subplots(2, 3, figsize=(7.1, 4.4), constrained_layout=True)
+    plot_metric(axes[0, 0], rows_by_method, "scale_share", "Scale share", "(a) Codebook update decomposition", (0, 1))
+    axes[0, 0].axhline(0.5, color="#999999", lw=1.0, ls="--")
+    plot_metric(axes[0, 1], rows_by_method, "scale_match_log_l1", "Log L1 error", "(b) Feature-codebook scale gap")
+    plot_metric(axes[0, 2], rows_by_method, "scale_match_corr", "Correlation", "(c) Channel-scale correlation", (-1, 1))
+    plot_metric(axes[1, 0], rows_by_method, "pca_var_js", "JS divergence", "(d) PCA manifold variance gap")
+    plot_metric(axes[1, 1], rows_by_method, "remove_s_flip_rate", "Flip rate", "(e) ASVQ assignment without s", (0, 1))
 
-    fig, axes = plt.subplots(1, len(metrics), figsize=(7.0, 1.75), constrained_layout=True)
-    for ax, (metric, ylabel) in zip(axes, metrics):
-        for method in METHOD_ORDER:
-            mrows = sorted(by_method.get(method, []), key=lambda r: r["epoch"])
-            xs = [r["epoch"] for r in mrows if np.isfinite(r.get(metric, np.nan))]
-            ys = [r[metric] for r in mrows if np.isfinite(r.get(metric, np.nan))]
-            if not xs:
-                continue
-            sx, sy = smooth_xy(xs, ys)
-            ax.plot(sx, sy, color=colors.get(method), linewidth=1.4, label=METHOD_LABELS.get(method, method))
-            ax.scatter(xs, ys, color=colors.get(method), s=10, zorder=3, linewidths=0)
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel(ylabel)
-        ax.grid(True, color="#DDDDDD", linewidth=0.4, alpha=0.8)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    axes[-1].legend(frameon=False, loc="best", handlelength=1.4)
-    ensure_dir(Path(out_dir) / "figures")
-    fig.savefig(Path(out_dir) / "figures" / "diagnostic_curves.pdf")
-    fig.savefig(Path(out_dir) / "figures" / "diagnostic_curves.png", dpi=300)
-    plt.close(fig)
-
-
-def plot_scale_scatter(out_dir, final_rows, vectors):
-    plt = setup_matplotlib()
-    methods = [m for m in METHOD_ORDER if (m, "feature_std") in vectors and (m, "cb_std") in vectors]
-    if not methods:
-        return
-    n = len(methods)
-    fig, axes = plt.subplots(1, n, figsize=(1.55 * n, 1.6), constrained_layout=True)
-    if n == 1:
-        axes = [axes]
-    for ax, method in zip(axes, methods):
-        x = vectors[(method, "feature_std")].numpy()
-        y = vectors[(method, "cb_std")].numpy()
-        ax.scatter(x, y, s=9, color="#222222", alpha=0.75, linewidths=0)
-        lo = min(float(np.min(x)), float(np.min(y)))
-        hi = max(float(np.max(x)), float(np.max(y)))
-        ax.plot([lo, hi], [lo, hi], color="#C44E52", linewidth=0.8, linestyle="--")
-        ax.set_title(METHOD_LABELS.get(method, method))
-        ax.set_xlabel("$\\sigma(z_d)$")
-        ax.set_ylabel("$\\sigma(\\hat e_{:,d})$")
-        ax.grid(True, color="#DDDDDD", linewidth=0.4, alpha=0.8)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    ensure_dir(Path(out_dir) / "figures")
-    fig.savefig(Path(out_dir) / "figures" / "scale_matching_scatter.pdf")
-    fig.savefig(Path(out_dir) / "figures" / "scale_matching_scatter.png", dpi=300)
-    plt.close(fig)
-
-
-def plot_final_bars(out_dir, final_rows):
-    plt = setup_matplotlib()
-    metrics = [
-        ("scale_match_error", "SME $\\downarrow$"),
-        ("scale_corr", "Scale corr. $\\uparrow$"),
-        ("geo_drift", "Geo. drift $\\downarrow$"),
-        ("val_ppl", "PPL $\\uparrow$"),
-    ]
-    rows = [r for r in sorted(final_rows, key=lambda r: METHOD_ORDER.index(r["method"]) if r["method"] in METHOD_ORDER else 99)]
-    if not rows:
-        return
-    labels = [METHOD_LABELS.get(r["method"], r["method"]) for r in rows]
-    fig, axes = plt.subplots(1, len(metrics), figsize=(7.0, 1.8), constrained_layout=True)
-    for ax, (metric, title) in zip(axes, metrics):
-        vals = np.array([r.get(metric, np.nan) for r in rows], dtype=float)
-        if not np.isfinite(vals).any():
-            ax.axis("off")
+    ax = axes[1, 2]
+    for method, curve in pca_curves.items():
+        if curve is None:
             continue
-        colors = ["#111111" if r["method"] == "asvq" else "#9A9A9A" for r in rows]
-        ax.bar(np.arange(len(rows)), vals, color=colors, width=0.68)
-        ax.set_title(title)
-        ax.set_xticks(np.arange(len(rows)))
-        ax.set_xticklabels(labels, rotation=35, ha="right")
-        ax.grid(True, axis="y", color="#DDDDDD", linewidth=0.4, alpha=0.8)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    ensure_dir(Path(out_dir) / "figures")
-    fig.savefig(Path(out_dir) / "figures" / "final_diagnostic_bars.pdf")
-    fig.savefig(Path(out_dir) / "figures" / "final_diagnostic_bars.png", dpi=300)
+        x = np.arange(1, len(curve) + 1)
+        ax.plot(x, curve, lw=2.0, color=METHOD_COLORS.get(method), label=METHOD_LABELS.get(method, method))
+    ax.set_title("(f) Final codebook variance on data PCs")
+    ax.set_xlabel("PC rank")
+    ax.set_ylabel("Cumulative variance")
+    ax.set_ylim(0, 1.02)
+    ax.grid(True, color="#E6E6E6", linewidth=0.8)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=min(7, len(labels)), frameon=False, bbox_to_anchor=(0.5, -0.02))
+    for ext in ("pdf", "png"):
+        fig.savefig(Path(out_dir) / f"asvq_empirical_summary.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_asvq_intervention(out_dir, final_rows):
-    plt = setup_matplotlib()
-    asvq = next((r for r in final_rows if r["method"] == "asvq"), None)
-    if asvq is None or not np.isfinite(asvq.get("val_ppl_wo_scale", np.nan)):
-        return
-    metrics = [
-        ("val_ppl", "val_ppl_wo_scale", "PPL"),
-        ("val_utilization", "val_utilization_wo_scale", "Utilization"),
-    ]
-    fig, axes = plt.subplots(1, 2, figsize=(3.2, 1.7), constrained_layout=True)
-    for ax, (with_key, without_key, title) in zip(axes, metrics):
-        vals = [asvq.get(with_key, np.nan), asvq.get(without_key, np.nan)]
-        ax.bar([0, 1], vals, color=["#111111", "#B5B5B5"], width=0.62)
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(["ASVQ", "w/o $s$"])
-        ax.set_title(title)
-        ax.grid(True, axis="y", color="#DDDDDD", linewidth=0.4, alpha=0.8)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    fig.suptitle(f"Assignment flip rate: {asvq['assignment_flip_wo_scale'] * 100:.2f}%", y=1.02, fontsize=8)
-    ensure_dir(Path(out_dir) / "figures")
-    fig.savefig(Path(out_dir) / "figures" / "asvq_scale_intervention.pdf")
-    fig.savefig(Path(out_dir) / "figures" / "asvq_scale_intervention.png", dpi=300)
-    plt.close(fig)
+def write_csv(rows, out_path):
+    keys = sorted({k for row in rows for k in row.keys()})
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-def write_analysis(path, final_rows):
-    best = {}
-    for key in ["scale_match_error", "scale_corr", "geo_drift", "val_ppl", "val_utilization"]:
-        vals = [(r["method"], r.get(key)) for r in final_rows if np.isfinite(r.get(key, np.nan))]
-        if not vals:
-            continue
-        reverse = not LOWER_IS_BETTER.get(key, False)
-        vals = sorted(vals, key=lambda x: x[1], reverse=reverse)
-        best[key] = vals[0]
-
-    lines = [
-        "# ASVQ Scale-Coupling Diagnostics",
-        "",
-        "This report is generated for method-section evidence rather than final reconstruction benchmarking.",
-        "The curves use the original checkpoint points as markers and a PCHIP interpolation followed by a short moving average for visual smoothing; claims should be based on the marked points and summary table.",
-        "",
-        "## Main observations",
-    ]
-    for key, (method, value) in best.items():
-        lines.append(f"- Best `{key}`: {METHOD_LABELS.get(method, method)} ({value:.4f}).")
-    asvq = next((r for r in final_rows if r["method"] == "asvq"), None)
-    if asvq is not None and np.isfinite(asvq.get("assignment_flip_wo_scale", np.nan)):
-        lines.append(
-            f"- Removing ASVQ's channel scale changes {asvq['assignment_flip_wo_scale'] * 100:.2f}% of validation assignments, "
-            "which supports that the scale variable participates in nearest-neighbor partitioning."
-        )
-        lines.append(
-            f"- ASVQ PPL with scale is {asvq.get('val_ppl', float('nan')):.2f}; without scale it is "
-            f"{asvq.get('val_ppl_wo_scale', float('nan')):.2f}."
-        )
-    lines.extend(
-        [
-            "",
-            "## Recommended paper wording",
-            "",
-            "We add a diagnostic experiment to verify the mechanism suggested by the analysis. For each checkpoint, we measure the log-scale matching error between encoder features and the effective codebook, the correlation between their channel-wise scales, and the drift of the normalized codebook geometry across epochs. ASVQ directly tracks feature scale through its explicit scale variable while keeping the normalized codebook geometry more stable. As an intervention, removing the learned scale at inference changes a substantial fraction of assignments and reduces codebook entropy, indicating that adaptive scale is an active part of the quantization partition rather than a post-hoc rescaling.",
-            "",
-        ]
-    )
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="ASVQ empirical scale-coupling diagnostics.")
-    parser.add_argument("--config-dir", default="configs/vqvae/imagenet-1k")
-    parser.add_argument("--methods", nargs="*", default=METHOD_ORDER)
-    parser.add_argument("--run-root", default=None, help="Optional root with method/ckpt folders.")
-    parser.add_argument("--checkpoint", action="append", help="Override checkpoint paths, e.g. asvq=/path/a.ckpt,/path/b.ckpt")
-    parser.add_argument("--output-dir", default="diagnostics/asvq_imagenet1k")
-    parser.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--max-val-batches", type=int, default=16)
-    parser.add_argument("--final-only-data", action="store_true", help="Compute validation feature stats only on final checkpoint.")
-    parser.add_argument("--skip-data", action="store_true", help="Only analyze checkpoint codebook statistics.")
-    args = parser.parse_args()
-
-    out_dir = Path(args.output_dir)
-    ensure_dir(out_dir)
-    ensure_dir(out_dir / "tables")
-    ensure_dir(out_dir / "figures")
-
-    explicit = parse_explicit_checkpoints(args.checkpoint)
-    device = torch.device(args.device)
-    all_rows = []
+def write_latex(rows_by_method, out_path):
     final_rows = []
-    vectors = {}
+    for method, rows in rows_by_method.items():
+        if rows:
+            final_rows.append(rows[-1])
+    cols = [
+        ("method", "Method"),
+        ("scale_share", "Scale Share"),
+        ("scale_match_log_l1", "Scale Gap"),
+        ("scale_match_corr", "Scale Corr."),
+        ("pca_var_js", "PCA JS"),
+        ("remove_s_flip_rate", "w/o $s$ Flip"),
+    ]
+    lines = ["\\begin{tabular}{lccccc}", "\\toprule"]
+    lines.append(" & ".join(name for _, name in cols) + " \\\\")
+    lines.append("\\midrule")
+    for row in final_rows:
+        vals = [METHOD_LABELS.get(row["method"], row["method"])]
+        for key, _ in cols[1:]:
+            val = row.get(key, float("nan"))
+            vals.append("--" if not np.isfinite(val) else f"{val:.3f}")
+        lines.append(" & ".join(vals) + " \\\\")
+    lines.extend(["\\bottomrule", "\\end{tabular}"])
+    Path(out_path).write_text("\n".join(lines), encoding="utf-8")
 
-    for method in args.methods:
-        method = method.lower()
-        config_path = Path(args.config_dir) / f"{method}.yaml"
-        if not config_path.exists():
-            print(f"[WARN] Missing config: {config_path}")
+
+def run(args):
+    ensure_dir(args.output_dir)
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
+    explicit = parse_explicit_ckpts(args.ckpt)
+    methods = args.methods
+    all_rows = []
+    rows_by_method = {}
+    pca_curves = {}
+
+    for method in methods:
+        cfg_path = Path(args.config_dir) / f"{method}.yaml"
+        if not cfg_path.exists():
+            print(f"[skip] missing config: {cfg_path}")
             continue
-        config = load_config(config_path)
-        ckpts = discover_checkpoints(config, method, run_root=args.run_root, explicit=explicit)
+        config = load_config(cfg_path)
+        ckpts = discover_checkpoints(config, method, args.run_root, explicit)
+        if args.latest_only and ckpts:
+            ckpts = [ckpts[-1]]
         if not ckpts:
-            print(f"[WARN] No checkpoints found for {method}.")
+            print(f"[skip] no checkpoints for {method}")
             continue
-        print(f"[INFO] {method}: {len(ckpts)} checkpoint(s)")
-        prev_norm_cb = None
-        prev_cb_std = None
-        dataloader = None
 
-        for i, ckpt_path in enumerate(ckpts):
+        print(f"[method] {method}: {len(ckpts)} checkpoint(s)")
+        rows_by_method[method] = []
+        prev_components = None
+        loader = None
+        final_pca_curve = None
+
+        for i, ckpt_path in enumerate(tqdm(ckpts, desc=method)):
             epoch = parse_ckpt_epoch(ckpt_path, i + 1)
-            is_final = i == len(ckpts) - 1
             model = load_model(config, ckpt_path, device)
-            quant = model.quantize
-            cb = effective_codebook(quant)
-            norm_cb = normalized_codebook(quant)
-            cb_std = safe_tensor(cb.std(dim=0)) if cb is not None else None
-            base_std = safe_tensor(norm_cb.std(dim=0)) if norm_cb is not None else None
-            scale = safe_tensor(getattr(quant, "scale", None))
+            eff_cb, scale, norm_cb = decompose_codebook(model.quantize)
+            eff_cb_cpu = eff_cb.detach().cpu().float()
+            scale_cpu = scale.detach().cpu().float()
+            norm_cpu = norm_cb.detach().cpu().float()
+
+            if loader is None:
+                loader = load_validation_loader(config, args.batch_size, args.num_workers)
+            feats = collect_features(model, loader, device, args.max_batches, args.max_points)
+            feature_std = feats["std"].float()
+            cb_std = eff_cb_cpu.std(dim=0, unbiased=False).clamp_min(EPS)
 
             row = {
                 "method": method,
                 "label": METHOD_LABELS.get(method, method),
                 "epoch": epoch,
                 "checkpoint": str(ckpt_path),
-                "codebook_scale_cv": vector_stats(cb_std)["cv"] if cb_std is not None else float("nan"),
-                "base_scale_cv": vector_stats(base_std)["cv"] if base_std is not None else float("nan"),
-                "scale_cv": vector_stats(scale)["cv"] if scale is not None else float("nan"),
-                "geo_drift": cosine_drift(norm_cb.cpu() if norm_cb is not None else None, prev_norm_cb),
-                "scale_drift": log_l1_drift(cb_std, prev_cb_std),
+                "feature_tokens": feats["count"],
+                "codebook_size": eff_cb_cpu.shape[0],
+                "dim": eff_cb_cpu.shape[1],
+                "scale_mean": float(scale_cpu.mean().item()),
+                "scale_cv": float((scale_cpu.std(unbiased=False) / scale_cpu.mean().clamp_min(EPS)).item()),
+                "cb_std_mean": float(cb_std.mean().item()),
+                "feature_std_mean": float(feature_std.mean().item()),
+                "scale_match_log_l1": scale_match_error(feature_std, cb_std),
+                "scale_match_corr": scale_corr(feature_std, cb_std),
             }
 
-            need_data = (not args.skip_data) and ((not args.final_only_data) or is_final)
-            if need_data:
-                if dataloader is None:
-                    dataloader = load_validation_loader(config, args.batch_size, args.num_workers)
-                stats = collect_feature_assignment_stats(
-                    model,
-                    dataloader,
-                    args.max_val_batches,
-                    device,
-                    intervention=(method == "asvq" and is_final),
-                )
-                feature_std = stats.pop("feature_std", None)
-                if feature_std is not None and cb_std is not None:
-                    row["scale_match_error"] = scale_match_error(feature_std, cb_std)
-                    row["scale_corr"] = scale_corr(feature_std, cb_std)
-                    if is_final:
-                        vectors[(method, "feature_std")] = feature_std
-                        vectors[(method, "cb_std")] = cb_std
-                row.update(stats)
+            cur_components = (eff_cb_cpu, scale_cpu, norm_cpu)
+            if prev_components is not None:
+                row.update(contribution_metrics(prev_components, cur_components))
+            else:
+                row.update({
+                    "effective_rel_drift": float("nan"),
+                    "scale_only_rel_drift": float("nan"),
+                    "norm_only_rel_drift": float("nan"),
+                    "scale_share": float("nan"),
+                    "norm_share": float("nan"),
+                    "norm_cosine_drift": float("nan"),
+                    "scale_log_l1_drift": float("nan"),
+                })
 
-            if is_final:
-                row.update(read_result_txt(ckpt_path))
+            manifold, pca_curve = manifold_metrics(feats["samples"], feature_std, eff_cb_cpu)
+            row.update(manifold)
+            row.update(assignment_without_scale_metrics(method, feats["samples"], eff_cb_cpu, scale_cpu, norm_cpu, args.assign_chunk_size))
+            final_pca_curve = pca_curve
 
+            rows_by_method[method].append(row)
             all_rows.append(row)
-            if is_final:
-                final_rows.append(row)
-
-            prev_norm_cb = norm_cb.detach().cpu() if norm_cb is not None else None
-            prev_cb_std = cb_std.detach().cpu() if cb_std is not None else None
+            prev_components = cur_components
             del model
-            if torch.cuda.is_available():
+            if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-    fields = sorted({k for row in all_rows for k in row.keys()})
-    write_csv(out_dir / "tables" / "diagnostic_by_checkpoint.csv", all_rows, fields)
-    final_fields = sorted({k for row in final_rows for k in row.keys()})
-    write_csv(out_dir / "tables" / "diagnostic_final.csv", final_rows, final_fields)
-    write_latex_table(out_dir / "tables" / "diagnostic_table.tex", final_rows)
-    write_recon_latex_table(out_dir / "tables" / "reconstruction_table.tex", final_rows)
-    plot_curves(out_dir, all_rows)
-    plot_scale_scatter(out_dir, final_rows, vectors)
-    plot_final_bars(out_dir, final_rows)
-    plot_asvq_intervention(out_dir, final_rows)
-    write_analysis(out_dir / "analysis.md", final_rows)
-    print(f"[DONE] Wrote diagnostics to {out_dir}")
+        pca_curves[method] = final_pca_curve
+
+    write_csv(all_rows, Path(args.output_dir) / "metrics.csv")
+    write_latex(rows_by_method, Path(args.output_dir) / "final_table.tex")
+    save_plots(rows_by_method, pca_curves, args.output_dir)
+    print(f"[done] wrote results to {args.output_dir}")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Empirical diagnostics for ASVQ scale-vs-normalized-codebook claims."
+    )
+    parser.add_argument("--config-dir", default="configs/vqvae/imagenet-1k")
+    parser.add_argument("--methods", nargs="+", default=METHOD_ORDER)
+    parser.add_argument("--run-root", default=None, help="Optional root with method/ckpt/*.ckpt layout.")
+    parser.add_argument("--ckpt", action="append", default=[], help="Explicit method=path1,path2 override. Can repeat.")
+    parser.add_argument("--output-dir", default="analysis/asvq_empirical")
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--max-batches", type=int, default=32)
+    parser.add_argument("--max-points", type=int, default=8192)
+    parser.add_argument("--assign-chunk-size", type=int, default=2048)
+    parser.add_argument("--latest-only", action="store_true", help="Analyze only the last checkpoint of each method.")
+    return parser
 
 
 if __name__ == "__main__":
-    main()
+    run(build_parser().parse_args())
