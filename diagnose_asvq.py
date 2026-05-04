@@ -495,7 +495,7 @@ def plot_scale_decomposition(summary_rows, output_dir):
     colors = [METHOD_COLORS.get(m, "#666666") for m in methods]
     x = np.arange(len(methods))
 
-    fig, ax = plt.subplots(figsize=(6.8, 2.5))
+    fig, ax = plt.subplots(figsize=(3.4, 2.5))
     ax.bar(x, scale_share, color=colors, edgecolor="white", linewidth=0.8, label="Scale term")
     ax.bar(
         x,
