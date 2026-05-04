@@ -391,20 +391,6 @@ def pca_histogram_js(latents, quants, bins):
     return js_divergence(z_hist.reshape(-1), q_hist.reshape(-1))
 
 
-def normalized_quant_error(latents, quants):
-    centered = latents - latents.mean(axis=0, keepdims=True)
-    denom = np.mean(np.sum(centered * centered, axis=1)) + EPS
-    mse = np.mean(np.sum((latents - quants) ** 2, axis=1))
-    return float(mse / denom)
-
-
-def subspace_affinity(latents, quants, rank):
-    _, basis_z = fit_pca_basis(latents, rank=rank)
-    _, basis_q = fit_pca_basis(quants, rank=rank)
-    singular_values = np.linalg.svd(basis_z.T @ basis_q, compute_uv=False)
-    return float(np.mean(singular_values ** 2))
-
-
 def analyze_manifold_match(
     method,
     config,
@@ -440,9 +426,7 @@ def analyze_manifold_match(
         "checkpoint_name": checkpoint.name,
         "num_tokens_total": int(total_tokens),
         "num_tokens_sampled": int(latents.shape[0]),
-        "normalized_quant_error": normalized_quant_error(latents, quants),
         "occupancy_js_divergence": pca_histogram_js(latents, quants, bins=bins),
-        "subspace_affinity": subspace_affinity(latents, quants, rank=pca_rank),
         "codebook_utilization": float((usage > 0).mean()),
         "token_perplexity": float(
             np.exp(-np.sum((usage / max(usage.sum(), 1.0)) * np.log((usage / max(usage.sum(), 1.0)) + EPS)))
@@ -546,29 +530,16 @@ def plot_manifold_metrics(metric_rows, output_dir, pca_rank):
     colors = [METHOD_COLORS.get(m, "#666666") for m in methods]
     y = np.arange(len(metric_rows))
 
-    fig, axes = plt.subplots(1, 3, figsize=(6.8, 2.8), sharey=True)
-    specs = [
-        ("normalized_quant_error", "Normalized coverage error ↓"),
-        ("occupancy_js_divergence", "Occupancy JS divergence ↓"),
-        ("subspace_affinity", f"Top-{pca_rank} subspace affinity ↑"),
-    ]
-
-    for ax, (key, xlabel) in zip(axes, specs):
-        values = [row[key] for row in metric_rows]
-        ax.hlines(y, xmin=np.zeros_like(y, dtype=float), xmax=values, color="#D9D9D9", linewidth=1.2, zorder=1)
-        ax.scatter(values, y, s=34, c=colors, edgecolors="black", linewidths=0.35, zorder=2)
-        ax.set_xlabel(xlabel)
-        ax.set_axisbelow(True)
-        ax.grid(axis="x")
-        ax.grid(axis="y", visible=False)
-        if key == "subspace_affinity":
-            ax.set_xlim(0.0, 1.0)
-
-    axes[0].set_yticks(y)
-    axes[0].set_yticklabels(labels)
-    axes[0].invert_yaxis()
-    for ax in axes[1:]:
-        ax.tick_params(axis="y", left=False, labelleft=False)
+    fig, ax = plt.subplots(figsize=(6.8, 2.8))
+    values = [row["occupancy_js_divergence"] for row in metric_rows]
+    ax.hlines(y, xmin=np.zeros_like(y, dtype=float), xmax=values, color="#D9D9D9", linewidth=1.2, zorder=1)
+    ax.scatter(values, y, s=34, c=colors, edgecolors="black", linewidths=0.35, zorder=2)
+    ax.set_xlabel("Occupancy JS divergence ↓")
+    ax.set_axisbelow(True)
+    ax.grid(axis="x")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
 
     for ext in ("pdf", "png"):
         fig.savefig(Path(output_dir) / f"fig_manifold_match.{ext}", dpi=300)
@@ -591,9 +562,8 @@ def write_summary(path, scale_rows, manifold_rows):
         lines.append("[Manifold matching]")
         for row in manifold_rows:
             lines.append(
-                f"{row['label']}: nqerr={row['normalized_quant_error']:.4f}, "
+                f"{row['label']}: "
                 f"js={row['occupancy_js_divergence']:.4f}, "
-                f"affinity={row['subspace_affinity']:.4f}, "
                 f"util={row['codebook_utilization']:.4f}"
             )
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -636,7 +606,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto", help="auto, cpu, cuda, cuda:0, ...")
     parser.add_argument("--batch-size", type=int, default=64, help="Validation batch size.")
     parser.add_argument("--num-workers", type=int, default=4, help="Validation dataloader workers.")
-    parser.add_argument("--max-batches", type=int, default=16, help="Validation batches for manifold analysis.")
+    parser.add_argument("--max-batches", type=int, default=32, help="Validation batches for manifold analysis.")
     parser.add_argument(
         "--max-points",
         type=int,
