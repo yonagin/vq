@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,135 +95,41 @@ def parse_quant_config(path: Path) -> dict[str, Any]:
     return {"target": target, "params": params}
 
 
-def linear_count(in_features: int, out_features: int, bias: bool = True) -> int:
-    return in_features * out_features + (out_features if bias else 0)
+def import_obj(class_path: str) -> Any:
+    module_name, obj_name = class_path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, obj_name)
 
 
-def embedding_count(num_embeddings: int, embedding_dim: int) -> int:
-    return num_embeddings * embedding_dim
+def instantiate_quantizer(config_path: Path) -> Any:
+    quantconfig = parse_quant_config(config_path)
+    quantizer_cls = import_obj(quantconfig["target"])
+    return quantizer_cls(**quantconfig["params"])
 
 
-def conv2d_count(
-    in_channels: int,
-    out_channels: int,
-    kernel_size: int,
-    bias: bool = True,
-) -> int:
-    return out_channels * in_channels * kernel_size * kernel_size + (out_channels if bias else 0)
-
-
-def qbridge_linear_extra(e_dim: int, layers: int) -> int:
-    return layers * linear_count(e_dim, e_dim, bias=True)
-
-
-def dit_extra(e_dim: int, n_e: int, bridge_model_name: str) -> int:
-    dit_specs = {
-        "QBridge-XS/2": {"depth": 2, "patch_size": 2, "head_hidden_size": 8, "num_heads": 4},
-        "QBridge-S/2": {"depth": 2, "patch_size": 2, "head_hidden_size": 16, "num_heads": 4},
-        "QBridge-S/4": {"depth": 2, "patch_size": 4, "head_hidden_size": 16, "num_heads": 4},
-        "Qbridge-S/4-d4": {"depth": 4, "patch_size": 4, "head_hidden_size": 16, "num_heads": 4},
-        "QBridge-S/8": {"depth": 2, "patch_size": 8, "head_hidden_size": 16, "num_heads": 4},
-        "QBridge-B/2": {"depth": 2, "patch_size": 2, "head_hidden_size": 32, "num_heads": 4},
-        "QBridge-B/8": {"depth": 2, "patch_size": 8, "head_hidden_size": 32, "num_heads": 4},
-        "QBridge-B/4": {"depth": 2, "patch_size": 4, "head_hidden_size": 32, "num_heads": 4},
-        "QBridge-B/4-d1": {"depth": 1, "patch_size": 4, "head_hidden_size": 32, "num_heads": 4},
-        "QBridge-B/4-d4": {"depth": 4, "patch_size": 4, "head_hidden_size": 32, "num_heads": 4},
-        "QBridge-L/2-d4": {"depth": 4, "patch_size": 2, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-L/8": {"depth": 2, "patch_size": 8, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-L/4": {"depth": 2, "patch_size": 4, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-L/2": {"depth": 2, "patch_size": 2, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-L/4-d1": {"depth": 1, "patch_size": 4, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-L/4-d4": {"depth": 4, "patch_size": 4, "head_hidden_size": 64, "num_heads": 4},
-        "QBridge-XL/4": {"depth": 2, "patch_size": 4, "head_hidden_size": 128, "num_heads": 4},
-        "QBridge-XL/4-d4": {"depth": 4, "patch_size": 4, "head_hidden_size": 128, "num_heads": 4},
-    }
-    spec = dit_specs[bridge_model_name]
-    input_size = math.isqrt(n_e)
-    if input_size * input_size != n_e:
-        raise ValueError(f"{bridge_model_name} requires square codebook size, got n_e={n_e}")
-
-    depth = spec["depth"]
-    patch_size = spec["patch_size"]
-    hidden_size = spec["head_hidden_size"] * spec["num_heads"]
-    mlp_hidden_dim = hidden_size * 2
-    num_patches = (input_size // patch_size) ** 2
-    num_classes = 1001  # LabelEmbedder(num_classes=1000, dropout_prob=0.1)
-
-    patch_embed = conv2d_count(e_dim, hidden_size, patch_size, bias=True)
-    label_embed = embedding_count(num_classes, hidden_size)
-    pos_embed = num_patches * hidden_size
-
-    attention = linear_count(hidden_size, 3 * hidden_size, True) + linear_count(hidden_size, hidden_size, True)
-    mlp = linear_count(hidden_size, mlp_hidden_dim, True) + linear_count(mlp_hidden_dim, hidden_size, True)
-    ada_ln = linear_count(hidden_size, 6 * hidden_size, True)
-    dit_block = attention + mlp + ada_ln
-    blocks = depth * dit_block
-
-    final_linear = linear_count(hidden_size, patch_size * patch_size * e_dim, True)
-    final_ada_ln = linear_count(hidden_size, 2 * hidden_size, True)
-    final_layer = final_linear + final_ada_ln
-
-    return patch_embed + label_embed + pos_embed + blocks + final_layer
+def count_module_state(module: Any) -> int:
+    total = 0
+    for tensor in module.parameters():
+        total += int(tensor.numel())
+    for tensor in module.buffers():
+        total += int(tensor.numel())
+    return total
 
 
 def compute_extra_params(config_path: Path) -> int:
     quantconfig = parse_quant_config(config_path)
-    target = quantconfig["target"]
-    params = quantconfig["params"]
-    n_e = int(params["n_e"])
-    e_dim = int(params["e_dim"])
-
-    if target.endswith("VectorQuantizer"):
-        return 0
-
-    if target.endswith("SimVQ"):
-        return qbridge_linear_extra(e_dim=e_dim, layers=1)
-
-    if target.endswith("AffineVQ"):
-        use_running_statistics = bool(params.get("use_running_statistics", False))
-        num_groups = int(params.get("num_groups", 1))
-        if use_running_statistics:
-            return 4 * num_groups * e_dim + 1
-        return 2 * num_groups * e_dim
-
-    if target.endswith("ASVQ"):
-        use_ema_scale = bool(params.get("use_ema_scale", True))
-        if use_ema_scale:
-            return e_dim + 1
-        return e_dim
-
-    if target.endswith("BridgeVQ"):
-        bridge_type = params.get("bridge_type", "linear")
-        bridge_model_name = params.get("bridge_model_name")
-        bridge_num_layers = int(params.get("bridge_num_layers", 5))
-
-        if bridge_model_name is None:
-            bridge_type = str(bridge_type).lower()
-            if bridge_type in ("identity", "none"):
-                bridge_model_name = "Qbridge-none"
-            elif bridge_type in ("linear", "lin", "single_linear"):
-                bridge_model_name = "Qbridge-lin/1"
-            elif bridge_type == "mlp":
-                if bridge_num_layers == 1:
-                    bridge_model_name = "Qbridge-lin/1"
-                elif bridge_num_layers == 5:
-                    bridge_model_name = "Qbridge-lin/5"
-                else:
-                    raise ValueError(f"Unsupported MLP depth: {bridge_num_layers}")
-            elif bridge_type == "dit":
-                bridge_model_name = "QBridge-B/4"
-            else:
-                raise ValueError(f"Unsupported bridge_type: {bridge_type}")
-
-        if bridge_model_name == "Qbridge-none":
-            return 0
-        if bridge_model_name == "Qbridge-lin/1":
-            return qbridge_linear_extra(e_dim=e_dim, layers=1)
-        if bridge_model_name == "Qbridge-lin/5":
-            return qbridge_linear_extra(e_dim=e_dim, layers=5)
-        return dit_extra(e_dim=e_dim, n_e=n_e, bridge_model_name=bridge_model_name)
-
-    raise ValueError(f"Unsupported quantizer target: {target}")
+    quantizer = instantiate_quantizer(config_path)
+    n_e = int(quantconfig["params"]["n_e"])
+    e_dim = int(quantconfig["params"]["e_dim"])
+    codebook_params = n_e * e_dim
+    total_state = count_module_state(quantizer)
+    extra_params = total_state - codebook_params
+    if extra_params < 0:
+        raise ValueError(
+            f"Negative extra params for {config_path}: "
+            f"total_state={total_state}, codebook={codebook_params}"
+        )
+    return extra_params
 
 
 def parse_results(path: Path) -> dict[str, dict[str, str]]:
@@ -239,31 +145,6 @@ def parse_results(path: Path) -> dict[str, dict[str, str]]:
             values[key.strip()] = value.strip()
         parsed[name] = values
     return parsed
-
-
-def format_param_count(value: int) -> str:
-    return f"{value:,}"
-
-
-def format_float(value: float, digits: int = 4) -> str:
-    return f"{value:.{digits}f}"
-
-
-def to_latex(rows: list[ResultRow]) -> str:
-    lines = [
-        r"\begin{tabular}{l l r r r r r}",
-        r"\toprule",
-        r"Method & Transform type & Extra params & PSNR & SSIM & PPL & Utilization \\",
-        r"\midrule",
-    ]
-    for row in rows:
-        lines.append(
-            f"{row.name} & {row.transform_type} & {format_param_count(row.extra_params)} "
-            f"& {format_float(row.psnr)} & {format_float(row.ssim)} "
-            f"& {format_float(row.ppl)} & {format_float(row.utilization)} \\\\"
-        )
-    lines.extend([r"\bottomrule", r"\end{tabular}"])
-    return "\n".join(lines) + "\n"
 
 
 def build_rows() -> list[ResultRow]:
@@ -296,6 +177,31 @@ def update_result_text(rows: list[ResultRow]) -> str:
         if count != 1:
             raise ValueError(f"Failed to update Extra params for {row.name}")
     return updated
+
+
+def format_param_count(value: int) -> str:
+    return f"{value:,}"
+
+
+def format_float(value: float, digits: int = 4) -> str:
+    return f"{value:.{digits}f}"
+
+
+def to_latex(rows: list[ResultRow]) -> str:
+    lines = [
+        r"\begin{tabular}{l l r r r r r}",
+        r"\toprule",
+        r"Method & Transform type & Extra params & PSNR & SSIM & PPL & Utilization \\",
+        r"\midrule",
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.name} & {row.transform_type} & {format_param_count(row.extra_params)} "
+            f"& {format_float(row.psnr)} & {format_float(row.ssim)} "
+            f"& {format_float(row.ppl)} & {format_float(row.utilization)} \\\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}"])
+    return "\n".join(lines) + "\n"
 
 
 def main() -> None:
