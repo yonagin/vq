@@ -519,7 +519,7 @@ def plot_manifold_metrics(metric_rows, output_dir, pca_rank):
     colors = [METHOD_COLORS.get(m, "#666666") for m in methods]
     y = np.arange(len(metric_rows))
 
-    fig, ax = plt.subplots(figsize=(6.8, 2.8))
+    fig, ax = plt.subplots(figsize=(3.4, 2.8))
     values = [row["occupancy_js_divergence"] for row in metric_rows]
     ax.hlines(y, xmin=np.zeros_like(y, dtype=float), xmax=values, color="#D9D9D9", linewidth=1.2, zorder=1)
     ax.scatter(values, y, s=34, c=colors, edgecolors="black", linewidths=0.35, zorder=2)
