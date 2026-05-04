@@ -330,7 +330,6 @@ def subsample_pairs(latents, quants, max_points, seed):
 def collect_latent_pairs(model, dataloader, device, max_batches, max_points, seed, use_ema_eval):
     latents = []
     quants = []
-    usage = torch.zeros(model.quantize.n_e, dtype=torch.long)
     total_tokens = 0
 
     with maybe_ema_scope(model, use_ema_eval):
@@ -347,14 +346,12 @@ def collect_latent_pairs(model, dataloader, device, max_batches, max_points, see
             latents.append(z_flat)
             quants.append(q_flat)
 
-            flat_idx = indices.reshape(-1).long().detach().cpu()
-            usage += torch.bincount(flat_idx, minlength=model.quantize.n_e)
-            total_tokens += int(flat_idx.numel())
+            total_tokens += int(indices.reshape(-1).numel())
 
     latents = torch.cat(latents, dim=0).numpy().astype(np.float64, copy=False)
     quants = torch.cat(quants, dim=0).numpy().astype(np.float64, copy=False)
     latents, quants = subsample_pairs(latents, quants, max_points=max_points, seed=seed)
-    return latents, quants, usage.numpy(), total_tokens
+    return latents, quants, total_tokens
 
 
 def fit_pca_basis(array, rank):
@@ -396,8 +393,7 @@ def analyze_manifold_match(
     config,
     checkpoint,
     device,
-    batch_size,
-    num_workers,
+    dataloader,
     max_batches,
     max_points,
     bins,
@@ -407,9 +403,7 @@ def analyze_manifold_match(
 ):
     print(f"[mani] {method}: loading {checkpoint.name}")
     model = load_model(config, checkpoint, device)
-    datamodule = build_datamodule(config, batch_size=batch_size, num_workers=num_workers)
-    dataloader = get_eval_dataloader(datamodule)
-    latents, quants, usage, total_tokens = collect_latent_pairs(
+    latents, quants, total_tokens = collect_latent_pairs(
         model=model,
         dataloader=dataloader,
         device=device,
@@ -427,13 +421,8 @@ def analyze_manifold_match(
         "num_tokens_total": int(total_tokens),
         "num_tokens_sampled": int(latents.shape[0]),
         "occupancy_js_divergence": pca_histogram_js(latents, quants, bins=bins),
-        "codebook_utilization": float((usage > 0).mean()),
-        "token_perplexity": float(
-            np.exp(-np.sum((usage / max(usage.sum(), 1.0)) * np.log((usage / max(usage.sum(), 1.0)) + EPS)))
-        ),
     }
 
-    del datamodule
     del model
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -563,8 +552,7 @@ def write_summary(path, scale_rows, manifold_rows):
         for row in manifold_rows:
             lines.append(
                 f"{row['label']}: "
-                f"js={row['occupancy_js_divergence']:.4f}, "
-                f"util={row['codebook_utilization']:.4f}"
+                f"js={row['occupancy_js_divergence']:.4f}"
             )
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -657,6 +645,13 @@ def main():
             "No checkpoints were discovered. Pass --run-root or explicit --ckpt method=path1,path2,..."
         )
 
+    shared_datamodule = build_datamodule(
+        next(iter(method_to_config.values())),
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+    shared_dataloader = get_eval_dataloader(shared_datamodule)
+
     for method in methods:
         if method not in method_to_ckpts:
             continue
@@ -678,8 +673,7 @@ def main():
                 config=method_to_config[method],
                 checkpoint=method_to_ckpts[method][-1],
                 device=device,
-                batch_size=args.batch_size,
-                num_workers=args.num_workers,
+                dataloader=shared_dataloader,
                 max_batches=args.max_batches,
                 max_points=args.max_points,
                 bins=args.hist_bins,
