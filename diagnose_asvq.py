@@ -281,6 +281,16 @@ def contribution_metrics(prev, cur):
     }
 
 
+def finite_or_none(x):
+    if x is None:
+        return None
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) else None
+
+
 def manifold_metrics(z_samples, feature_std, eff_cb):
     if z_samples.numel() == 0:
         return {}, None
@@ -347,10 +357,22 @@ def smooth_xy(x, y, points=160):
     return dense_x, dense_y
 
 
+def filter_valid_series(rows, metric):
+    xs, ys = [], []
+    for row in rows:
+        val = finite_or_none(row.get(metric))
+        if val is None:
+            continue
+        xs.append(row["epoch"])
+        ys.append(val)
+    return xs, ys
+
+
 def plot_metric(ax, rows_by_method, metric, ylabel, title, ylim=None):
     for method, rows in rows_by_method.items():
-        x = [r["epoch"] for r in rows]
-        y = [r.get(metric, float("nan")) for r in rows]
+        x, y = filter_valid_series(rows, metric)
+        if not x:
+            continue
         sx, sy = smooth_xy(x, y)
         label = METHOD_LABELS.get(method, method)
         color = METHOD_COLORS.get(method, None)
@@ -364,7 +386,7 @@ def plot_metric(ax, rows_by_method, metric, ylabel, title, ylim=None):
     ax.grid(True, color="#E6E6E6", linewidth=0.8)
 
 
-def save_plots(rows_by_method, pca_curves, out_dir):
+def save_question_plots(rows_by_method, pca_curves, out_dir):
     try:
         import matplotlib
 
@@ -388,31 +410,59 @@ def save_plots(rows_by_method, pca_curves, out_dir):
         "ps.fonttype": 42,
     })
 
-    fig, axes = plt.subplots(2, 3, figsize=(7.1, 4.4), constrained_layout=True)
-    plot_metric(axes[0, 0], rows_by_method, "scale_share", "Scale share", "(a) Codebook update decomposition", (0, 1))
-    axes[0, 0].axhline(0.5, color="#999999", lw=1.0, ls="--")
-    plot_metric(axes[0, 1], rows_by_method, "scale_match_log_l1", "Log L1 error", "(b) Feature-codebook scale gap")
-    plot_metric(axes[0, 2], rows_by_method, "scale_match_corr", "Correlation", "(c) Channel-scale correlation", (-1, 1))
-    plot_metric(axes[1, 0], rows_by_method, "pca_var_js", "JS divergence", "(d) PCA manifold variance gap")
-    plot_metric(axes[1, 1], rows_by_method, "remove_s_flip_rate", "Flip rate", "(e) ASVQ assignment without s", (0, 1))
+    fig, ax = plt.subplots(1, 1, figsize=(3.4, 2.4), constrained_layout=True)
+    plot_metric(ax, rows_by_method, "scale_share", "Scale-dominant share", "Q1: scale vs. norm change", (0, 1))
+    ax.axhline(0.5, color="#999999", lw=1.0, ls="--")
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, frameon=False, ncol=2, loc="best")
+    for ext in ("pdf", "png"):
+        fig.savefig(Path(out_dir) / f"q1_scale_vs_norm.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-    ax = axes[1, 2]
+    fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.5), constrained_layout=True)
+    plot_metric(axes[0], rows_by_method, "scale_match_log_l1", "Log-scale gap", "Q2a: feature/codebook scale match")
+    axes[1].set_title("Q2b: final variance on data PCs")
+    axes[1].set_xlabel("PC rank")
+    axes[1].set_ylabel("Cumulative variance")
+    axes[1].set_ylim(0, 1.02)
+    axes[1].grid(True, color="#E6E6E6", linewidth=0.8)
     for method, curve in pca_curves.items():
         if curve is None:
             continue
         x = np.arange(1, len(curve) + 1)
-        ax.plot(x, curve, lw=2.0, color=METHOD_COLORS.get(method), label=METHOD_LABELS.get(method, method))
-    ax.set_title("(f) Final codebook variance on data PCs")
-    ax.set_xlabel("PC rank")
-    ax.set_ylabel("Cumulative variance")
-    ax.set_ylim(0, 1.02)
-    ax.grid(True, color="#E6E6E6", linewidth=0.8)
-
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=min(7, len(labels)), frameon=False, bbox_to_anchor=(0.5, -0.02))
+        axes[1].plot(x, curve, lw=2.0, color=METHOD_COLORS.get(method), label=METHOD_LABELS.get(method, method))
+    handles, labels = axes[1].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, frameon=False, ncol=3, loc="lower center", bbox_to_anchor=(0.5, -0.03))
     for ext in ("pdf", "png"):
-        fig.savefig(Path(out_dir) / f"asvq_empirical_summary.{ext}", dpi=300, bbox_inches="tight")
+        fig.savefig(Path(out_dir) / f"q2_manifold_match.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
+
+    asvq_rows = rows_by_method.get("asvq", [])
+    if asvq_rows:
+        fig, ax = plt.subplots(1, 1, figsize=(3.4, 2.4), constrained_layout=True)
+        x1, y1 = filter_valid_series(asvq_rows, "remove_s_flip_rate")
+        x2, y2 = filter_valid_series(asvq_rows, "scalar_s_flip_rate")
+        if x1:
+            sx, sy = smooth_xy(x1, y1)
+            ax.plot(sx, sy, color=METHOD_COLORS["asvq"], lw=2.0, label="remove s")
+            ax.scatter(x1, y1, color=METHOD_COLORS["asvq"], s=16, zorder=3)
+        if x2:
+            sx, sy = smooth_xy(x2, y2)
+            ax.plot(sx, sy, color="#888888", lw=2.0, ls="--", label="replace by mean(s)")
+            ax.scatter(x2, y2, color="#888888", s=16, zorder=3)
+        ax.set_title("Q3: assignment change after removing s")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Flip rate")
+        ax.set_ylim(0, 1)
+        ax.grid(True, color="#E6E6E6", linewidth=0.8)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles, labels, frameon=False, loc="best")
+        for ext in ("pdf", "png"):
+            fig.savefig(Path(out_dir) / f"q3_remove_s_assignment.{ext}", dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
 
 def write_csv(rows, out_path):
@@ -432,11 +482,10 @@ def write_latex(rows_by_method, out_path):
         ("method", "Method"),
         ("scale_share", "Scale Share"),
         ("scale_match_log_l1", "Scale Gap"),
-        ("scale_match_corr", "Scale Corr."),
         ("pca_var_js", "PCA JS"),
         ("remove_s_flip_rate", "w/o $s$ Flip"),
     ]
-    lines = ["\\begin{tabular}{lccccc}", "\\toprule"]
+    lines = ["\\begin{tabular}{lcccc}", "\\toprule"]
     lines.append(" & ".join(name for _, name in cols) + " \\\\")
     lines.append("\\midrule")
     for row in final_rows:
@@ -446,6 +495,36 @@ def write_latex(rows_by_method, out_path):
             vals.append("--" if not np.isfinite(val) else f"{val:.3f}")
         lines.append(" & ".join(vals) + " \\\\")
     lines.extend(["\\bottomrule", "\\end{tabular}"])
+    Path(out_path).write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_summary(rows_by_method, out_path):
+    lines = [
+        "# ASVQ empirical summary",
+        "",
+        "Only three questions are reported here.",
+        "Q1 uses `scale_share`: values above 0.5 mean effective-codebook change is more scale-driven than normalized-codebook-driven.",
+        "Q2 uses two views: `scale_match_log_l1` for channel-scale matching, and final cumulative variance on data PCs for manifold alignment.",
+        "Q3 uses assignment flip rate after removing `s` from ASVQ.",
+        "",
+        "## Final epoch summary",
+        "",
+    ]
+    for method, rows in rows_by_method.items():
+        if not rows:
+            continue
+        row = rows[-1]
+        lines.append(
+            f"- {METHOD_LABELS.get(method, method)}: "
+            f"scale_share={row.get('scale_share', float('nan')):.3f} | "
+            f"scale_gap={row.get('scale_match_log_l1', float('nan')):.3f} | "
+            f"pca_js={row.get('pca_var_js', float('nan')):.3f}"
+            + (
+                f" | remove_s_flip={row.get('remove_s_flip_rate', float('nan')):.3f}"
+                if finite_or_none(row.get("remove_s_flip_rate")) is not None
+                else ""
+            )
+        )
     Path(out_path).write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -535,9 +614,20 @@ def run(args):
 
         pca_curves[method] = final_pca_curve
 
-    write_csv(all_rows, Path(args.output_dir) / "metrics.csv")
+    all_rows_for_csv = []
+    for row in all_rows:
+        cleaned = {}
+        for key, value in row.items():
+            if isinstance(value, float) and not np.isfinite(value):
+                cleaned[key] = ""
+            else:
+                cleaned[key] = value
+        all_rows_for_csv.append(cleaned)
+
+    write_csv(all_rows_for_csv, Path(args.output_dir) / "metrics.csv")
     write_latex(rows_by_method, Path(args.output_dir) / "final_table.tex")
-    save_plots(rows_by_method, pca_curves, args.output_dir)
+    write_summary(rows_by_method, Path(args.output_dir) / "summary.md")
+    save_question_plots(rows_by_method, pca_curves, args.output_dir)
     print(f"[done] wrote results to {args.output_dir}")
 
 
