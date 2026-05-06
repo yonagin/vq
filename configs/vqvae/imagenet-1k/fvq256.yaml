@@ -21,7 +21,7 @@ trainer:
     class_path: lightning.pytorch.loggers.TensorBoardLogger
     init_args:
         save_dir: "/vq/imagenet-1k_log/fvq256/log" #Please specify your own path
-        version: "n16k_d32"
+        version: "n16k_d256"
         name:
 
 model:
