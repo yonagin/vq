@@ -12,7 +12,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "/vq/imagenet-1k_log/asvq128/ckpt" # Please specify your own path
+        dirpath: "/vq/imagenet-1k_log/asvq256/ckpt" # Please specify your own path
         save_top_k: -1 # save all checkpoints
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
