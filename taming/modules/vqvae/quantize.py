@@ -748,7 +748,7 @@ class AffineVQ1D(AffineVQ):
 
 class ASVQ(nn.Module):
     def __init__(self, n_e, e_dim, beta, remap=None, unknown_index="random",
-                 sane_index_shape=False, fixed_cb=False, use_ema_scale=True, ema_decay=0.99, legacy=False):
+                 sane_index_shape=False, fixed_cb=False, use_ema_scale=True, use_rms=False, ema_decay=0.99):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim
@@ -756,6 +756,7 @@ class ASVQ(nn.Module):
         
         self.fixed_cb = fixed_cb
         self.use_ema_scale = use_ema_scale
+        self.use_rms = use_rms
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
         nn.init.normal_(self.embedding.weight, mean=0, std=1)
         self.embedding.weight.requires_grad = not fixed_cb
@@ -808,14 +809,21 @@ class ASVQ(nn.Module):
     def update_scale(self, z):
         if not self.training:
             return
-        batch_std = z.std(dim=0)  # [n]
-        self.scale.mul_(self.ema_decay).add_(batch_std, alpha=1 - self.ema_decay)
+        if self.use_rms:
+            # RMS: 不去均值
+            channel_scale = torch.sqrt(torch.mean(z.detach().pow(2), dim=0))
+        else:
+            channel_scale = z.detach().std(dim=0)
+        self.scale.mul_(self.ema_decay).add_(channel_scale, alpha=1 - self.ema_decay)
 
     def get_norm_cb(self):
         weight = self.embedding.weight
-        std = weight.std(dim=0, keepdim=True).detach()
-        std = torch.clamp(std, min=1e-8)
-        return weight / std
+        if self.use_rms:
+            norm = torch.sqrt(torch.mean(weight.pow(2), dim=0, keepdim=True)).detach()
+        else:
+            norm = weight.std(dim=0, keepdim=True).detach()
+        norm = torch.clamp(norm, min=1e-8)
+        return weight / norm
 
     def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
         assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"

@@ -24,7 +24,6 @@ METHOD_LABELS = {
     "mq": "MQ",
     "fvq": "FVQ",
     "asvq": "ASVQ",
-    "asvq65k": "ASVQ-65K",
 }
 METHOD_COLORS = {
     "vanilla": "#4C78A8",
@@ -33,7 +32,6 @@ METHOD_COLORS = {
     "mq": "#B279A2",
     "fvq": "#E45756",
     "asvq": "#111111",
-    "asvq65k": "#72B7B2",
 }
 EPS = 1e-8
 
